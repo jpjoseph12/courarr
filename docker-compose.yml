@@ -1,0 +1,13 @@
+services:
+  courarr:
+    image: ghcr.io/jpjoseph12/courarr:latest
+    container_name: courarr
+    restart: unless-stopped
+    ports:
+      - "6161:6161"
+    environment:
+      - TZ=Europe/London
+      - PUID=99
+      - PGID=100
+    volumes:
+      - ./config:/config

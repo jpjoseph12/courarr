@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Courarr</title>
+    <link rel="icon" href="logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <header class="top">
+      <a class="brand" href="#/">
+        <img src="logo.svg" alt="" width="28" height="28" />
+        <span>Courarr</span>
+      </a>
+      <nav class="nav">
+        <a href="#/" data-nav="lists">Lists</a>
+        <a href="#/activity" data-nav="activity">Activity</a>
+        <a href="#/settings" data-nav="settings">Settings</a>
+      </nav>
+      <div class="top-right">
+        <div class="status" id="status"></div>
+        <button class="btn btn-sm" id="refresh-all" type="button">
+          <svg class="ico" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" /></svg>
+          <span>Refresh all</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="view" class="view"></main>
+
+    <dialog id="dialog" class="dialog"></dialog>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+node_modules
+.config
+.git
+.github
+test
+tools
+unraid
+*.md
+Dockerfile
+docker-compose.yml

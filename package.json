@@ -1,0 +1,22 @@
+{
+  "name": "courarr",
+  "version": "0.1.0",
+  "description": "Filtered seasonal anime lists from AniList, served as Custom Lists for Sonarr and Radarr.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "CONFIG_DIR=./.config node --disable-warning=ExperimentalWarning --watch server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\"",
+    "icon": "node tools/make-icon.mjs"
+  },
+  "dependencies": {
+    "croner": "^9.1.0",
+    "express": "^5.1.0"
+  }
+}
