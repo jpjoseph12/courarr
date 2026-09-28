@@ -8,11 +8,27 @@ const dialog = document.getElementById('dialog');
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+// The server build this page was loaded from (see X-Courarr-Build on every response).
+const PAGE_BUILD = document.querySelector('meta[name="courarr-build"]')?.content || '';
+let reloading = false;
+
+/** Courarr was updated (or restarted) since this page loaded: reload to get the new UI. */
+function checkBuild(res) {
+  const build = res.headers.get('x-courarr-build');
+  if (!build || !PAGE_BUILD || build === PAGE_BUILD || reloading) return false;
+  reloading = true;
+  toast('Courarr was updated — reloading…');
+  setTimeout(() => location.reload(), 800);
+  return true;
+}
+
 async function api(path, opts = {}) {
   // X-Courarr: the server only accepts changes from a logged-in browser that sends it.
   const init = { ...opts, headers: { 'Content-Type': 'application/json', 'X-Courarr': '1', ...(opts.headers || {}) } };
   if (opts.body !== undefined && typeof opts.body !== 'string') init.body = JSON.stringify(opts.body);
   const res = await fetch(path, init);
+  // A write from an out-of-date page may have been refused or misread: stop and reload instead.
+  if (checkBuild(res) && (init.method || 'GET') !== 'GET') throw new Error('Courarr was updated — reloading the page');
   if (res.status === 204) return null;
   const data = await res.json().catch(() => null);
   if (res.status === 401 && data?.code && !path.startsWith('/api/auth/')) {
@@ -2760,7 +2776,9 @@ async function startApp() {
 async function boot() {
   let st;
   try {
-    st = await (await fetch('/api/auth/status')).json();
+    const res = await fetch('/api/auth/status');
+    if (checkBuild(res)) return;
+    st = await res.json();
   } catch {
     view.innerHTML = '<div class="empty"><h2>Can’t reach Courarr</h2><p>Is the container running?</p></div>';
     return;

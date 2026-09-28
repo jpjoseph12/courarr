@@ -131,7 +131,8 @@ describe('sessions', () => {
     await b.call('POST', '/api/auth/login', { username: 'admin', password: 'correct horse' });
     const blocked = await b.call('POST', '/api/lists', { name: 'CSRF', target: 'sonarr' });
     assert.equal(blocked.status, 403);
-    assert.match(blocked.body.error, /X-Courarr/);
+    assert.equal(blocked.body.code, 'reload');
+    assert.match(blocked.body.error, /out of date.*Reload the page/);
     assert.equal((await b.ui('POST', '/api/lists', { name: 'Allowed', target: 'sonarr' })).status, 201);
     assert.equal((await b.call('GET', '/api/lists')).status, 200, 'reads are fine without it');
   });
