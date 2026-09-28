@@ -4,7 +4,9 @@ node_modules
 .github
 test
 tools
-unraid
+templates
+docs
+ca_profile.xml
 *.md
 Dockerfile
 docker-compose.yml

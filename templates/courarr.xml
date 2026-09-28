@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Courarr</Name>
+  <Repository>ghcr.io/jpjoseph12/courarr:latest</Repository>
+  <Registry>https://github.com/jpjoseph12/courarr/pkgs/container/courarr</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/jpjoseph12/courarr/issues</Support>
+  <Project>https://github.com/jpjoseph12/courarr</Project>
+  <ReadMe>https://raw.githubusercontent.com/jpjoseph12/courarr/main/README.md</ReadMe>
+  <Overview>Auto-updating lists for Sonarr and Radarr. Anime lists come from AniList (this season, next season, genres, tags, studios, streaming site…) and are added to Sonarr as Anime series; TV &amp; movie lists come from TMDB (trending, new on your streaming services, networks, people, age ratings, critic scores…) and are added as Standard or Daily series. Courarr creates the Sonarr/Radarr import lists for you, can skip titles your Maintainerr rules flag, drip-feeds big lists, sends notifications, and refreshes every day at 3 AM or on demand. The first visit creates your login and walks you through connecting Sonarr, Radarr and the free TMDB/OMDb keys.</Overview>
+  <Category>MediaApp:Video Downloaders: Tools:</Category>
+  <ExtraSearchTerms>anime anilist tmdb sonarr radarr lists import list listrr trakt seasonal simulcast maintainerr</ExtraSearchTerms>
+  <Requires>Sonarr and/or Radarr to import the lists. Anime lists need nothing else; TV &amp; movie lists need a free TMDB API key, and score filters a free OMDb key (both entered in the web UI).</Requires>
+  <WebUI>http://[IP]:[PORT:6161]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/jpjoseph12/courarr/main/templates/courarr.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/jpjoseph12/courarr/main/public/icon.png</Icon>
+  <Screenshot>https://raw.githubusercontent.com/jpjoseph12/courarr/main/docs/screenshots/editor-anime.png</Screenshot>
+  <Screenshot>https://raw.githubusercontent.com/jpjoseph12/courarr/main/docs/screenshots/lists.png</Screenshot>
+  <Screenshot>https://raw.githubusercontent.com/jpjoseph12/courarr/main/docs/screenshots/settings.png</Screenshot>
+  <Screenshot>https://raw.githubusercontent.com/jpjoseph12/courarr/main/docs/screenshots/editor-tv.png</Screenshot>
+  <License>MIT</License>
+  <MinVer>6.12.0</MinVer>
+  <Date>2026-09-28</Date>
+  <Changes>
+### 2026-09-28
+- First public release.
+- Anime lists (AniList) and TV &amp; movie lists (TMDB) for Sonarr and Radarr, with the right Sonarr series type (Anime, Standard or Daily).
+- One-click "Add to Sonarr/Radarr", drip-feed, keep-after-drop-off, "new on my streaming services", critic &amp; audience scores (OMDb).
+- Maintainerr collections ignored in every list; notifications (Discord, Telegram, ntfy, Gotify, webhook).
+- Login with a first-run setup guide; API key for scripts; optional feed keys.
+  </Changes>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DonateText/>
+  <DonateLink/>
+  <Config Name="WebUI Port" Target="6161" Default="6161" Mode="tcp" Description="Web UI and the list feed URLs Sonarr/Radarr read." Type="Port" Display="always" Required="true" Mask="false">6161</Config>
+  <Config Name="AppData" Target="/config" Default="/mnt/user/appdata/courarr" Mode="rw" Description="Database (lists, settings, login) and caches. Keep it: everything you set up lives here." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/courarr</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID the app runs as." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID the app runs as." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Reset login" Target="COURARR_RESET_AUTH" Default="false" Mode="" Description="Forgot the password? Set to true, start the container, create a new login in the web UI, then set this back to false. Lists and settings are kept." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="UMASK" Target="UMASK" Default="002" Mode="" Description="File creation mask." Type="Variable" Display="advanced" Required="false" Mask="false">002</Config>
+</Container>

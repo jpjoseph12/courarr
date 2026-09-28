@@ -118,13 +118,17 @@ Image: `ghcr.io/jpjoseph12/courarr:latest` (linux/amd64 and linux/arm64, so Rasp
 
 ## Install
 
+### Unraid: from the Apps tab
+
+Once Courarr is listed in Community Applications: **Apps** → search **Courarr** → **Install** → **Apply**. The defaults below are already filled in. Until then, use one of the options that follow.
+
 ### Unraid 7
 
 Unraid 7 no longer has the "Template repositories" box, so the template is added once from the terminal. After that, the install and any later changes happen in the normal Docker UI.
 
 1. Open a terminal (the **>_** icon at the top right) and run:
    ```bash
-   mkdir -p /boot/config/plugins/dockerMan/templates-user && wget -qO /boot/config/plugins/dockerMan/templates-user/my-Courarr.xml https://raw.githubusercontent.com/jpjoseph12/courarr/main/unraid/courarr.xml
+   mkdir -p /boot/config/plugins/dockerMan/templates-user && wget -qO /boot/config/plugins/dockerMan/templates-user/my-Courarr.xml https://raw.githubusercontent.com/jpjoseph12/courarr/main/templates/courarr.xml
    ```
 2. **Docker** tab → **Add Container** → **Template** → pick **Courarr** (under *User templates*).
 3. Check the fields and click **Apply**. The defaults are:
