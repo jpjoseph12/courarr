@@ -1,13 +1,15 @@
+# Courarr — see README.md › "What you need" for every option.
+# Start:  docker compose up -d      Update:  docker compose pull && docker compose up -d
 services:
   courarr:
     image: ghcr.io/jpjoseph12/courarr:latest
     container_name: courarr
     restart: unless-stopped
     ports:
-      - "6161:6161"
+      - "6161:6161"            # host:container — change the left side if 6161 is taken
     environment:
-      - TZ=Europe/London
-      - PUID=99
-      - PGID=100
+      - TZ=Europe/London       # your time zone; scheduled refreshes run in it
+      - PUID=1000              # user that owns ./config  (run `id -u`)
+      - PGID=1000              # group that owns ./config (run `id -g`)
     volumes:
-      - ./config:/config
+      - ./config:/config       # database (lists, settings, API keys) + cache — keep it!
