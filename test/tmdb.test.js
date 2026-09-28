@@ -7,7 +7,7 @@ import fs from 'node:fs';
 process.env.CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'courarr-tmdb-'));
 process.env.TMDB_BASE_URL = 'http://127.0.0.1:7072/3';
 const { start } = await import('./fixtures/mock-tmdb.mjs');
-const { discoverParams, resolveDateFilter, searchTmdb, tmdbClient, tvExternalIds } = await import('../server/tmdb.js');
+const { allowedTvTypes, discoverParams, resolveDateFilter, searchTmdb, tmdbClient, tmdbDetails } = await import('../server/tmdb.js');
 const { DEFAULT_FILTERS, feedFor } = await import('../server/builder.js');
 
 const at = new Date('2026-09-28T12:00:00Z');
@@ -19,8 +19,11 @@ after(() => {
   server.closeAllConnections();
   server.close();
 });
-const tvDefaults = () => structuredClone(DEFAULT_FILTERS.tmdb.sonarr);
-const movieDefaults = () => structuredClone(DEFAULT_FILTERS.tmdb.radarr);
+
+const tvDefaults = () => ({ ...structuredClone(DEFAULT_FILTERS.tmdb.sonarr), minVotes: 0 });
+const movieDefaults = () => ({ ...structuredClone(DEFAULT_FILTERS.tmdb.radarr), minVotes: 0, date: { mode: 'any' }, releaseType: 'any' });
+const client = () => tmdbClient('test');
+const ids = (r) => r.results.map((x) => x.id);
 
 test('date windows', () => {
   assert.deepEqual(resolveDateFilter({ mode: 'lastDays', days: 30 }, 'tv', 'any', at).params, {
@@ -37,53 +40,100 @@ test('date windows', () => {
     'release_date.lte': '2026-10-05',
   });
   assert.equal(resolveDateFilter({ mode: 'airing' }, 'tv', 'any', at).params['air_date.lte'], '2026-10-05');
+  const range = resolveDateFilter({ mode: 'range', fromYear: 1990, toYear: 1999 }, 'movie', 'any', at);
+  assert.deepEqual(range.params, { 'primary_release_date.gte': '1990-01-01', 'primary_release_date.lte': '1999-12-31' });
+  assert.equal(range.label, 'Released 1990–1999');
 });
 
 test('discover params', () => {
-  const f = { ...movieDefaults(), genresInclude: [28, 12], genresExclude: [27], languages: ['en', 'fr'], providers: [8, 9] };
+  const f = {
+    ...movieDefaults(), releaseType: 'digital', genresInclude: [28, 12], genresExclude: [27], languages: ['en', 'fr'],
+    providers: [8, 9], minRuntime: 90, maxRuntime: 150, companies: [{ id: 923, name: 'Legendary' }],
+    people: [{ id: 2037, name: 'Cillian Murphy' }], maxCertification: '12A',
+  };
   const p = discoverParams('movie', f, 'GB', at).params;
-  assert.equal(p.with_genres, '28,12'); // AND
-  assert.equal(p.with_original_language, 'en|fr'); // OR
+  assert.equal(p.with_genres, '28,12'); // all
+  assert.equal(p.with_original_language, 'en|fr');
   assert.equal(p.with_watch_providers, '8|9');
   assert.equal(p.watch_region, 'GB');
   assert.equal(p.with_release_type, '4|5');
-  assert.equal(p.region, 'GB');
   assert.equal(p.without_keywords, '210024'); // anime excluded by default
-  assert.ok(!('with_networks' in p));
+  assert.equal(p['with_runtime.gte'], 90);
+  assert.equal(p['with_runtime.lte'], 150);
+  assert.equal(p.with_companies, '923');
+  assert.equal(p.with_people, '2037');
+  assert.equal(p['certification.lte'], '12A');
+  assert.equal(p.certification_country, 'GB');
+  assert.equal(discoverParams('movie', { ...f, genreMatch: 'any' }, 'GB', at).params.with_genres, '28|12');
+  // "Keep unrated" moves the rating check to details (discover would drop unrated titles).
+  assert.ok(!('certification.lte' in discoverParams('movie', { ...f, keepUnrated: true }, 'GB', at).params));
 
-  const tv = discoverParams('tv', { ...tvDefaults(), networks: [213], tvTypes: [4, 2], excludeAnime: false }, 'US', at).params;
+  const tv = discoverParams('tv', { ...tvDefaults(), networks: [213], excludeAnime: false, people: [{ id: 1 }] }, 'US', at).params;
   assert.equal(tv.with_networks, '213');
-  assert.equal(tv.with_type, '4|2');
   assert.ok(!('without_keywords' in tv));
-  // Sorting by rating without a vote floor would surface 10/10-from-one-vote junk.
-  assert.equal(discoverParams('tv', { ...tvDefaults(), minVotes: 0, sort: 'rating' }, 'US', at).params['vote_count.gte'], 200);
+  assert.ok(!('with_people' in tv), 'discover/tv has no people filter');
+  assert.equal(discoverParams('tv', { ...tvDefaults(), sort: 'rating' }, 'US', at).params['vote_count.gte'], 200);
 });
 
-test('search against mock TMDB: anime excluded, TVDB ids resolved, feed shape', async () => {
-  const client = tmdbClient('test');
-  {
-    const tv = await searchTmdb(client, 'tv', { ...tvDefaults(), minVotes: 0 }, 'US');
-    assert.deepEqual(tv.results.map((r) => r.id), [1396, 100088, 95396, 126308]); // no Frieren
+test('Sonarr series type decides which TV types are allowed', () => {
+  assert.deepEqual(allowedTvTypes({ tvTypes: [], seriesType: 'standard' }), [0, 2, 3, 4, 6]);
+  assert.deepEqual(allowedTvTypes({ tvTypes: [4, 5], seriesType: 'standard' }), [4]);
+  assert.deepEqual(allowedTvTypes({ tvTypes: [], seriesType: 'daily' }), [1, 5]);
+  assert.deepEqual(allowedTvTypes({ tvTypes: [4], seriesType: 'daily' }), [1, 5]);
+  assert.equal(discoverParams('tv', tvDefaults(), 'US', at).params.with_type, '0|2|3|4|6');
+});
 
-    const withAnime = await searchTmdb(client, 'tv', { ...tvDefaults(), minVotes: 0, excludeAnime: false }, 'US');
-    assert.ok(withAnime.results.some((r) => r.id === 209867));
+test('standard TV: anime and talk shows left out; daily list gets only talk shows', async () => {
+  assert.deepEqual(ids(await searchTmdb(client(), 'tv', tvDefaults(), 'US')), [1396, 100088, 95396, 126308]);
+  assert.deepEqual(ids(await searchTmdb(client(), 'tv', { ...tvDefaults(), seriesType: 'daily' }, 'US')), [2224]);
+  const withAnime = await searchTmdb(client(), 'tv', { ...tvDefaults(), excludeAnime: false }, 'US');
+  assert.ok(ids(withAnime).includes(209867));
+});
 
-    const movies = await searchTmdb(client, 'movie', { ...movieDefaults(), minVotes: 0, date: { mode: 'any' } }, 'US');
-    assert.ok(!movies.results.some((r) => r.id === 129), 'untagged Japanese animation is filtered too');
+test('TV details: seasons, episodes, upcoming episode, age rating, people', async () => {
+  const c = client();
+  assert.deepEqual(ids(await searchTmdb(c, 'tv', { ...tvDefaults(), maxSeasons: 2 }, 'US')), [100088, 95396, 126308]);
+  assert.deepEqual(ids(await searchTmdb(c, 'tv', { ...tvDefaults(), minEpisodes: 20 }, 'US')), [1396]);
+  assert.deepEqual(ids(await searchTmdb(c, 'tv', { ...tvDefaults(), upcomingEpisode: true }, 'US')), [100088]);
+  // GB 15 max: The Last of Us is 18 there; Shōgun has no GB rating (dropped unless keepUnrated).
+  assert.deepEqual(ids(await searchTmdb(c, 'tv', { ...tvDefaults(), maxCertification: '15' }, 'GB')), [1396, 95396]);
+  assert.deepEqual(
+    ids(await searchTmdb(c, 'tv', { ...tvDefaults(), maxCertification: '15', keepUnrated: true }, 'GB')),
+    [1396, 95396, 126308],
+  );
+  const people = await searchTmdb(c, 'tv', { ...tvDefaults(), people: [{ id: 1253360, name: 'Pedro Pascal' }] }, 'US');
+  assert.deepEqual(ids(people), [100088]);
+  assert.match(people.label, /^Credits/);
 
-    const ids = await tvExternalIds(client, [1396, 126308]);
-    assert.deepEqual(ids.get(1396), { tvdbId: 81189, imdbId: 'tt0903747' });
-    assert.equal(ids.get(126308).tvdbId, null);
+  const d = await tmdbDetails(c, 'tv', [1396, 126308]);
+  assert.equal(d.get(1396).tvdbId, 81189);
+  assert.equal(d.get(1396).seasons, 5);
+  assert.equal(d.get(126308).tvdbId, null);
+});
 
-    const items = [
-      { key: 1396, title: 'Breaking Bad', tmdbId: 1396, tvdbId: 81189, imdbId: 'tt0903747', externalId: 81189 },
-      // No TVDB id yet: Sonarr v4 would reject it, so it stays out of the feed.
-      { key: 126308, title: 'Shōgun', tmdbId: 126308, tvdbId: null, imdbId: 'tt2788316', externalId: null },
-    ];
-    assert.deepEqual(feedFor({ source: 'tmdb', target: 'sonarr' }, items), [
-      { title: 'Breaking Bad', tvdbId: 81189, tmdbId: 1396, imdbId: 'tt0903747' },
-    ]);
-  }
+test('movies: runtime, age rating, people, companies, sequels, status', async () => {
+  const c = client();
+  const all = await searchTmdb(c, 'movie', movieDefaults(), 'US');
+  assert.ok(!ids(all).includes(129), 'untagged Japanese animation is filtered too');
+  assert.deepEqual(ids(await searchTmdb(c, 'movie', { ...movieDefaults(), maxRuntime: 160 }, 'US')), [438631, 1022789]);
+  assert.deepEqual(ids(await searchTmdb(c, 'movie', { ...movieDefaults(), maxCertification: 'PG-13' }, 'US')), [693134, 438631, 1022789]);
+  assert.deepEqual(ids(await searchTmdb(c, 'movie', { ...movieDefaults(), people: [{ id: 2037 }] }, 'US')), [872585]);
+  assert.deepEqual(ids(await searchTmdb(c, 'movie', { ...movieDefaults(), companies: [{ id: 923 }] }, 'US')), [693134, 438631]);
+  // Dune (2021) is first in its collection, Part Two is the sequel; Oppenheimer is standalone.
+  assert.deepEqual(ids(await searchTmdb(c, 'movie', { ...movieDefaults(), sequels: 'only' }, 'US')), [693134]);
+  assert.ok(!ids(await searchTmdb(c, 'movie', { ...movieDefaults(), sequels: 'exclude' }, 'US')).includes(693134));
+  assert.deepEqual(ids(await searchTmdb(c, 'movie', { ...movieDefaults(), movieStatuses: ['Planned'] }, 'US')), []);
+});
+
+test('Sonarr feed carries TVDB ids only for matched shows', () => {
+  const items = [
+    { key: 1396, title: 'Breaking Bad', tmdbId: 1396, tvdbId: 81189, imdbId: 'tt0903747', externalId: 81189 },
+    // No TVDB id yet: Sonarr v4 would reject it, so it stays out of the feed.
+    { key: 126308, title: 'Shōgun', tmdbId: 126308, tvdbId: null, imdbId: 'tt2788316', externalId: null },
+  ];
+  assert.deepEqual(feedFor({ source: 'tmdb', target: 'sonarr' }, items), [
+    { title: 'Breaking Bad', tvdbId: 81189, tmdbId: 1396, imdbId: 'tt0903747' },
+  ]);
 });
 
 test('bad key surfaces TMDB’s message', async () => {

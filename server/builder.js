@@ -1,7 +1,7 @@
-import { searchMedia } from './anilist.js';
+import { searchMedia, staffMediaIds } from './anilist.js';
 import { arrClient, lookupByTitle } from './arr.js';
 import { ensureMapping, lookupMapping } from './mapping.js';
-import { posterUrl, searchTmdb, tmdbClient, tvExternalIds } from './tmdb.js';
+import { certificationCheck, posterUrl, rememberTvdb, searchTmdb, tmdbClient, tmdbDetails } from './tmdb.js';
 import * as store from './db.js';
 import { log } from './config.js';
 
@@ -19,6 +19,17 @@ const ANIME_BASE = {
   sequels: 'include',
   sort: 'POPULARITY_DESC',
   limit: 50,
+  genreMatch: 'all',
+  streaming: [],
+  studios: [],
+  people: [],
+  minEpisodes: 0,
+  maxEpisodes: 0,
+  minRuntime: 0,
+  maxRuntime: 0,
+  maxCertification: '',
+  keepUnrated: true, // many anime have no TMDB rating, so don't drop them by default
+  keepDays: 0,
 };
 
 const TMDB_BASE = {
@@ -40,21 +51,39 @@ const TMDB_BASE = {
   minVotes: 0,
   sort: 'popularity',
   limit: 50,
+  genreMatch: 'all',
+  companies: [],
+  people: [],
+  minRuntime: 0,
+  maxRuntime: 0,
+  minSeasons: 0,
+  maxSeasons: 0,
+  minEpisodes: 0,
+  maxEpisodes: 0,
+  upcomingEpisode: false,
+  maxCertification: '',
+  keepUnrated: false,
+  movieStatuses: [],
+  sequels: 'include',
+  keepDays: 0,
 };
 
 export const DEFAULT_FILTERS = {
   anilist: {
-    sonarr: { ...ANIME_BASE, season: { mode: 'current' }, formats: ['TV', 'TV_SHORT', 'ONA'] },
+    sonarr: { ...ANIME_BASE, season: { mode: 'current' }, formats: ['TV', 'TV_SHORT', 'ONA'], seriesType: 'anime' },
     radarr: { ...ANIME_BASE, season: { mode: 'currentYear' }, formats: ['MOVIE'] },
   },
   tmdb: {
-    sonarr: { ...TMDB_BASE, date: { mode: 'any' }, minVotes: 50 },
+    sonarr: { ...TMDB_BASE, date: { mode: 'any' }, minVotes: 50, seriesType: 'standard' },
     radarr: { ...TMDB_BASE, date: { mode: 'lastDays', days: 90 }, releaseType: 'digital', minVotes: 50 },
   },
 };
 
-/** Sonarr series type each list type should be added with. */
+/** Sonarr series type each list type defaults to. */
 export const SERIES_TYPE = { anilist: 'anime', tmdb: 'standard' };
+
+/** The Sonarr series type a list's shows should be added with. */
+export const seriesTypeFor = (list) => list.filters?.seriesType || SERIES_TYPE[list.source];
 
 /** Shared state for one refresh/preview pass: settings, overrides, clients, caches. */
 export async function createContext() {
@@ -147,7 +176,46 @@ async function buildAnime(target, filters, ctx) {
     await ensureMapping();
     ctx.mappingReady = true;
   }
-  const { media, seasonLabel } = await searchMedia(filters, ctx.settings.seasonRolloverDays);
+  // People: keep only anime the chosen staff / voice actors worked on.
+  let allowedIds = null;
+  if (filters.people?.length) {
+    allowedIds = new Set();
+    for (const p of filters.people) for (const id of await staffMediaIds(p.id)) allowedIds.add(id);
+  }
+
+  // Age rating: AniList has none, so borrow TMDB's through the id mapping.
+  let acceptBatch = null;
+  const certs = new Map();
+  if (filters.maxCertification) {
+    if (!ctx.tmdb) {
+      ctx.warnings.add('Age rating filter skipped: it needs a TMDB API key (Settings)');
+    } else {
+      const region = ctx.settings.tmdbRegion || 'US';
+      const check = {
+        tv: await certificationCheck(ctx.tmdb, 'tv', filters, region),
+        movie: await certificationCheck(ctx.tmdb, 'movie', filters, region),
+      };
+      acceptBatch = async (batch) => {
+        const refs = batch.map((m) => {
+          const map = lookupMapping(m.id);
+          return m.format === 'MOVIE' ? ['movie', map?.tmdbMovieId] : ['tv', map?.tmdbTvId];
+        });
+        const details = {};
+        for (const kind of ['tv', 'movie']) {
+          const ids = refs.filter(([k, id]) => k === kind && id).map(([, id]) => id);
+          details[kind] = ids.length ? await tmdbDetails(ctx.tmdb, kind, ids) : new Map();
+        }
+        return batch.map((m, i) => {
+          const [kind, id] = refs[i];
+          const c = id ? details[kind].get(id)?.certs : null;
+          if (c?.[region]) certs.set(m.id, c[region]);
+          return check[kind](c);
+        });
+      };
+    }
+  }
+
+  const { media, seasonLabel } = await searchMedia(filters, ctx.settings.seasonRolloverDays, { allowedIds, acceptBatch });
   const items = [];
   for (const m of media) {
     const match = await resolveAnime(m, target, ctx);
@@ -160,6 +228,8 @@ async function buildAnime(target, filters, ctx) {
       format: m.format,
       year: m.startDate?.year || m.seasonYear,
       episodes: m.episodes,
+      runtime: m.duration,
+      certification: certs.get(m.id) || null,
       score: m.averageScore,
       popularity: m.popularity,
       genres: m.genres,
@@ -183,8 +253,8 @@ async function buildTmdb(target, filters, ctx) {
   if (!ctx.tmdb) throw new Error('Add a TMDB API key in Settings to use normal TV / movie lists');
   const kind = target === 'sonarr' ? 'tv' : 'movie';
   const region = filters.region || ctx.settings.tmdbRegion || 'US';
-  const { results, label } = await searchTmdb(ctx.tmdb, kind, filters, region);
-  const tvIds = kind === 'tv' ? await tvExternalIds(ctx.tmdb, results.map((r) => r.id)) : new Map();
+  const { results, details, label } = await searchTmdb(ctx.tmdb, kind, filters, region);
+  const tvIds = new Map(results.map((r) => [r.id, details.get(r.id) || {}]));
 
   // Sonarr v4's Custom List only honours TVDB ids. When TMDB doesn't know the TVDB id yet,
   // ask Sonarr (it resolves tmdb:<id> through its own metadata service).
@@ -197,8 +267,8 @@ async function buildTmdb(target, filters, ctx) {
       try {
         const hit = (await sonarr.lookup(`tmdb:${r.id}`)).find((s) => s.tvdbId);
         if (hit) {
-          tvIds.set(r.id, { tvdbId: hit.tvdbId, imdbId: ext?.imdbId || hit.imdbId || null });
-          store.saveTmdbTvIds(r.id, hit.tvdbId, ext?.imdbId || hit.imdbId || null);
+          tvIds.set(r.id, { ...ext, tvdbId: hit.tvdbId, imdbId: ext?.imdbId || hit.imdbId || null });
+          rememberTvdb(r.id, hit.tvdbId);
           viaSonarr.add(r.id);
         }
       } catch {
@@ -210,6 +280,7 @@ async function buildTmdb(target, filters, ctx) {
   const items = results.map((r) => {
     const ext = tvIds.get(r.id) || {};
     const ids = { tmdbId: r.id, tvdbId: ext.tvdbId || null, imdbId: ext.imdbId || null };
+    const d = details.get(r.id) || {};
     const date = kind === 'tv' ? r.first_air_date : r.release_date;
     return {
       key: r.id,
@@ -223,6 +294,13 @@ async function buildTmdb(target, filters, ctx) {
       popularity: r.popularity,
       genreIds: r.genre_ids,
       language: r.original_language,
+      seasons: d.seasons ?? null,
+      episodes: d.episodes ?? null,
+      runtime: d.runtime ?? null,
+      status: d.status ?? null,
+      nextEpisode: d.nextEpisode ?? null,
+      certification: d.certs?.[region] || null,
+      sequel: d.sequel ?? null,
       cover: posterUrl(r.poster_path),
       siteUrl: `https://www.themoviedb.org/${kind}/${r.id}`,
       ...ids,
@@ -260,6 +338,24 @@ export function feedFor(list, items) {
   return out;
 }
 
+// ---------- keep after drop-off ----------
+
+/**
+ * Stamps the fresh results with lastSeen and carries over earlier items that dropped out of
+ * the results less than `keepDays` ago, so a title doesn't flicker in and out of the feed.
+ */
+export function mergeRetained(prev, next, keepDays, now = new Date()) {
+  const stamp = now.toISOString();
+  const current = next.map((it) => ({ ...it, lastSeen: stamp, retained: false }));
+  if (!(keepDays > 0)) return current;
+  const keys = new Set(current.map((i) => i.key));
+  const cutoff = now.getTime() - keepDays * 86_400_000;
+  const kept = prev
+    .filter((p) => !keys.has(p.key) && p.lastSeen && new Date(p.lastSeen).getTime() >= cutoff)
+    .map(({ excluded, ...p }) => ({ ...p, retained: true }));
+  return [...current, ...kept];
+}
+
 // ---------- refresh ----------
 
 let queue = Promise.resolve();
@@ -286,7 +382,9 @@ async function doRefresh(listIds, trigger) {
 
     for (const list of lists) {
       try {
-        const { items, label } = await buildItems(list.source, list.target, list.filters, ctx);
+        const built = await buildItems(list.source, list.target, list.filters, ctx);
+        const { label } = built;
+        const items = mergeRetained(store.getListItems(list.id), built.items, list.filters.keepDays);
         store.saveListItems(list.id, items);
         const matched = items.filter((i) => i.externalId).length;
         summary.lists.push({ id: list.id, name: list.name, label, total: items.length, matched });

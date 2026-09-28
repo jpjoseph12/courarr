@@ -4,13 +4,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PORT, TZ, VERSION, log } from './config.js';
 import * as store from './db.js';
-import { SEASONS, getMeta, resolveSeasonFilter } from './anilist.js';
+import { SEASONS, getMeta, resolveSeasonFilter, searchStaff, searchStudios } from './anilist.js';
 import { arrClient } from './arr.js';
 import {
-  DEFAULT_FILTERS, SERIES_TYPE, SOURCES, buildItems, createContext, feedFor, isRunning, refresh,
+  DEFAULT_FILTERS, SERIES_TYPE, SOURCES, buildItems, createContext, feedFor, isRunning, refresh, seriesTypeFor,
 } from './builder.js';
 import { ensureMapping, mappingInfo } from './mapping.js';
-import { SORTS as TMDB_SORTS, getTmdbMeta, resolveDateFilter, searchKeywords, tmdbClient } from './tmdb.js';
+import {
+  MOVIE_STATUSES, SORTS as TMDB_SORTS, getTmdbMeta, networkName, resolveDateFilter, searchTmdbEntity, tmdbClient,
+} from './tmdb.js';
 import { nextRun, schedule, validateCron } from './scheduler.js';
 
 class HttpError extends Error {
@@ -26,8 +28,8 @@ const bad = (msg) => new HttpError(400, msg);
 const FORMATS = ['TV', 'TV_SHORT', 'ONA', 'OVA', 'MOVIE', 'SPECIAL', 'MUSIC'];
 const STATUSES = ['RELEASING', 'NOT_YET_RELEASED', 'FINISHED', 'CANCELLED', 'HIATUS'];
 const SORTS = ['POPULARITY_DESC', 'SCORE_DESC', 'TRENDING_DESC', 'FAVOURITES_DESC', 'START_DATE_DESC'];
-const SEASON_MODES = ['current', 'next', 'previous', 'specific', 'year', 'currentYear', 'none'];
-const DATE_MODES = ['any', 'thisYear', 'year', 'lastDays', 'nextDays', 'airing'];
+const SEASON_MODES = ['current', 'next', 'previous', 'specific', 'year', 'currentYear', 'range', 'lastYears', 'none'];
+const DATE_MODES = ['any', 'thisYear', 'year', 'range', 'lastYears', 'lastDays', 'nextDays', 'airing'];
 
 const strList = (v, allowed) => {
   const arr = Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
@@ -44,6 +46,28 @@ const keywordList = (v) =>
     .map((k) => ({ id: Number(k?.id), name: String(k?.name || '').slice(0, 80) }))
     .filter((k) => Number.isInteger(k.id) && k.id > 0);
 const year = () => new Date().getFullYear();
+const cert = (v) => String(v || '').trim().slice(0, 12);
+
+/** Year range shared by both list types: from <= to, both within sane bounds. */
+function yearRange(src) {
+  const from = clampInt(src.fromYear, 1900, 2100, year() - 10);
+  const to = clampInt(src.toYear, 1900, 2100, year());
+  return { fromYear: Math.min(from, to), toYear: Math.max(from, to) };
+}
+
+/** Filters every list kind shares: genre match, people/companies/studios, lengths, rating, retention. */
+function commonFilters(f) {
+  return {
+    genreMatch: f.genreMatch === 'any' ? 'any' : 'all',
+    people: keywordList(f.people),
+    minRuntime: clampInt(f.minRuntime, 0, 1000, 0),
+    maxRuntime: clampInt(f.maxRuntime, 0, 1000, 0),
+    minEpisodes: clampInt(f.minEpisodes, 0, 10000, 0),
+    maxEpisodes: clampInt(f.maxEpisodes, 0, 10000, 0),
+    maxCertification: cert(f.maxCertification),
+    keepDays: clampInt(f.keepDays, 0, 365, 0),
+  };
+}
 
 function sanitizeAnimeFilters(f, target) {
   const d = DEFAULT_FILTERS.anilist[target];
@@ -56,8 +80,15 @@ function sanitizeAnimeFilters(f, target) {
     season.year = clampInt(s.year, 1940, 2100, year());
   }
   if (mode === 'year') season.year = clampInt(s.year, 1940, 2100, year());
+  if (mode === 'range') Object.assign(season, yearRange(s));
+  if (mode === 'lastYears') season.years = clampInt(s.years, 1, 50, 5);
 
   return {
+    ...commonFilters(f),
+    streaming: intList(f.streaming),
+    studios: keywordList(f.studios),
+    keepUnrated: f.keepUnrated !== false,
+    ...(target === 'sonarr' ? { seriesType: f.seriesType === 'standard' ? 'standard' : 'anime' } : {}),
     season,
     formats: strList(f.formats ?? d.formats, FORMATS),
     statuses: strList(f.statuses, STATUSES),
@@ -81,8 +112,26 @@ function sanitizeTmdbFilters(f, target) {
   const date = { mode };
   if (mode === 'year') date.year = clampInt(df.year, 1900, 2100, year());
   if (mode === 'lastDays' || mode === 'nextDays') date.days = clampInt(df.days, 1, 3650, 30);
+  if (mode === 'range') Object.assign(date, yearRange(df));
+  if (mode === 'lastYears') date.years = clampInt(df.years, 1, 50, 5);
   const tv = target === 'sonarr';
   return {
+    ...commonFilters(f),
+    companies: keywordList(f.companies),
+    keepUnrated: !!f.keepUnrated,
+    ...(tv
+      ? {
+          seriesType: f.seriesType === 'daily' ? 'daily' : 'standard',
+          minSeasons: clampInt(f.minSeasons, 0, 100, 0),
+          maxSeasons: clampInt(f.maxSeasons, 0, 100, 0),
+          upcomingEpisode: !!f.upcomingEpisode,
+          sequels: 'include',
+          movieStatuses: [],
+        }
+      : {
+          movieStatuses: strList(f.movieStatuses, MOVIE_STATUSES),
+          sequels: ['include', 'exclude', 'only'].includes(f.sequels) ? f.sequels : 'include',
+        }),
     collection: f.collection === 'trending' ? 'trending' : 'discover',
     date,
     releaseType: !tv && ['theatrical', 'digital'].includes(f.releaseType) ? f.releaseType : 'any',
@@ -98,6 +147,7 @@ function sanitizeTmdbFilters(f, target) {
     keywordsInclude: keywordList(f.keywordsInclude),
     keywordsExclude: keywordList(f.keywordsExclude),
     excludeAnime: f.excludeAnime !== false,
+    ...(tv ? {} : { minEpisodes: 0, maxEpisodes: 0 }),
     minRating: Math.min(Math.max(Number(f.minRating) || 0, 0), 10),
     minVotes: clampInt(f.minVotes, 0, 1_000_000, 0),
     sort: f.sort in TMDB_SORTS && !(tv && f.sort === 'revenue') ? f.sort : 'popularity',
@@ -143,7 +193,8 @@ function listLabel(list, settings) {
   if (list.source === 'tmdb') {
     const kind = list.target === 'sonarr' ? 'tv' : 'movie';
     const { label } = resolveDateFilter(list.filters.date, kind, list.filters.releaseType);
-    return list.filters.collection === 'trending' ? `Trending this week${label === 'Any time' ? '' : ` · ${label}`}` : label;
+    const prefix = list.target === 'sonarr' && list.filters.people?.length ? 'Credits' : list.filters.collection === 'trending' ? 'Trending this week' : null;
+    return prefix ? `${prefix}${label === 'Any time' ? '' : ` · ${label}`}` : label;
   }
   return resolveSeasonFilter(list.filters.season, settings.seasonRolloverDays).label;
 }
@@ -235,8 +286,24 @@ app.get('/api/tmdb/meta', async (req, res) => {
   res.json(await getTmdbMeta(tmdbOr400(), kind, region));
 });
 
-app.get('/api/tmdb/keywords', async (req, res) => {
-  res.json(await searchKeywords(tmdbOr400(), String(req.query.q || '').trim()));
+// Search boxes: TMDB keywords / people / companies, AniList studios / staff.
+app.get('/api/search/:type', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const type = req.params.type;
+  if (type === 'studio') return res.json(await searchStudios(q));
+  if (type === 'staff') return res.json(await searchStaff(q));
+  if (!['keyword', 'person', 'company'].includes(type)) throw new HttpError(404, 'Unknown search type');
+  res.json(await searchTmdbEntity(tmdbOr400(), type, q));
+});
+
+app.get('/api/tmdb/network/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw bad('Network IDs are whole numbers');
+  try {
+    res.json({ id, name: await networkName(tmdbOr400(), id) });
+  } catch {
+    throw new HttpError(404, `TMDB has no network ${id}`);
+  }
 });
 
 app.get('/api/lists', (_req, res) => {
@@ -349,7 +416,7 @@ app.get('/api/lists/:id/arr', async (req, res) => {
   res.json({
     connected: !!client,
     importList: current,
-    recommendedSeriesType: SERIES_TYPE[list.source],
+    recommendedSeriesType: seriesTypeFor(list),
     feedUrl: feedUrl(req, list.slug),
   });
 });
@@ -369,7 +436,7 @@ app.put('/api/lists/:id/arr', async (req, res) => {
     searchOnAdd: !!b.searchOnAdd,
   };
   if (list.target === 'sonarr') {
-    cfg.seriesType = ['standard', 'anime', 'daily'].includes(b.seriesType) ? b.seriesType : SERIES_TYPE[list.source];
+    cfg.seriesType = ['standard', 'anime', 'daily'].includes(b.seriesType) ? b.seriesType : seriesTypeFor(list);
     cfg.monitor = ['all', 'future', 'missing', 'existing', 'firstSeason', 'lastSeason', 'pilot', 'recent', 'none'].includes(b.monitor)
       ? b.monitor
       : 'all';

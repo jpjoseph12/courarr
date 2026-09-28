@@ -390,3 +390,28 @@ details.adv > div { display: flex; flex-direction: column; gap: 14px; }
   .item-actions { opacity: 1; }
   #refresh-all span { display: none; }
 }
+
+/* ---------- collapsible form sections ---------- */
+
+details.form-sec.sec { display: block; padding: 0; }
+.sec > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 18px;
+  font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text);
+}
+.sec > summary::-webkit-details-marker { display: none; }
+.sec > summary::after {
+  content: ''; margin-left: auto; width: 7px; height: 7px;
+  border-right: 2px solid var(--faint); border-bottom: 2px solid var(--faint);
+  transform: rotate(-45deg); transition: transform 0.15s;
+}
+.sec[open] > summary::after { transform: rotate(45deg); }
+.sec > summary:hover::after { border-color: var(--muted); }
+.sec-body { padding: 0 18px 18px; display: flex; flex-direction: column; gap: 14px; }
+.sec-count {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 6px;
+  border-radius: 999px; background: rgba(255, 122, 147, 0.16); color: var(--accent-2);
+  font-size: 11px; letter-spacing: 0;
+}
+.badge.kept { color: var(--warn); }

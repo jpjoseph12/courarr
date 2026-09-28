@@ -51,12 +51,14 @@ db.exec(`
     value TEXT NOT NULL
   );
 
-  -- TMDB TV id -> TVDB / IMDb ids (one API call per show, so cache them).
-  CREATE TABLE IF NOT EXISTS tmdb_tv_ids (
-    tmdb_id    INTEGER PRIMARY KEY,
-    tvdb_id    INTEGER,
-    imdb_id    TEXT,
-    fetched_at TEXT NOT NULL
+  -- Summarised TMDB /tv and /movie details (ids, seasons, ratings…): one call per title, so cache.
+  DROP TABLE IF EXISTS tmdb_tv_ids;
+  CREATE TABLE IF NOT EXISTS tmdb_details (
+    kind       TEXT NOT NULL,
+    tmdb_id    INTEGER NOT NULL,
+    data       TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (kind, tmdb_id)
   );
 
   CREATE TABLE IF NOT EXISTS runs (
@@ -212,19 +214,20 @@ export const addExclusion = (listId, key, title) =>
 export const removeExclusion = (listId, key) =>
   db.prepare('DELETE FROM exclusions WHERE list_id = ? AND item_key = ?').run(listId, key);
 
-// ---------- TMDB TV id cache ----------
+// ---------- TMDB details cache ----------
 
-export const getTmdbTvIds = (tmdbId) =>
-  db.prepare('SELECT * FROM tmdb_tv_ids WHERE tmdb_id = ?').get(tmdbId) || null;
+export function getTmdbDetails(kind, tmdbId) {
+  const row = db.prepare('SELECT data, fetched_at FROM tmdb_details WHERE kind = ? AND tmdb_id = ?').get(kind, tmdbId);
+  return row ? { data: JSON.parse(row.data), fetched_at: row.fetched_at } : null;
+}
 
-export const saveTmdbTvIds = (tmdbId, tvdbId, imdbId) =>
+export const saveTmdbDetails = (kind, tmdbId, data) =>
   db
     .prepare(
-      `INSERT INTO tmdb_tv_ids (tmdb_id, tvdb_id, imdb_id, fetched_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(tmdb_id) DO UPDATE SET tvdb_id = excluded.tvdb_id, imdb_id = excluded.imdb_id,
-         fetched_at = excluded.fetched_at`,
+      `INSERT INTO tmdb_details (kind, tmdb_id, data, fetched_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(kind, tmdb_id) DO UPDATE SET data = excluded.data, fetched_at = excluded.fetched_at`,
     )
-    .run(tmdbId, tvdbId ?? null, imdbId ?? null, now());
+    .run(kind, tmdbId, JSON.stringify(data), now());
 
 // ---------- overrides ----------
 

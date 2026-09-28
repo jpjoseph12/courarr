@@ -19,11 +19,39 @@ A *cour* is an anime broadcast season, hence the name.
 | | **Anime** | **TV & movies** |
 |---|---|---|
 | Source | [AniList](https://anilist.co) | [TMDB](https://www.themoviedb.org) (free API key) |
-| Filters | season (this, next, last or a specific season, or a year), format, status, sequels, genres, tags, country, popularity, score | discover or trending, release window (last/next N days, year, airing this week), digital vs cinema release, genres, keywords, language, country, streaming service, network, show type and status, rating, votes |
-| Sonarr series type | **Anime** | **Standard**. Anime is left out by default so it can't be added with the wrong type. |
+| Sonarr series type | **Anime** (or Standard) | **Standard**, or **Daily** for talk shows and news. Anime is left out by default. |
 | Radarr | anime films | any films |
 
-The two kinds stay separate. Anime lists only contain anime and are added to Sonarr as *Anime* series (absolute episode numbering). TV lists leave anime out and are added as *Standard* series. Each can use its own root folder, e.g. `/tv/anime` vs `/tv`.
+The kinds stay separate, so every show reaches Sonarr with the right series type:
+- Anime lists only contain anime and use *Anime* (absolute numbering).
+- Standard TV lists leave out anime and date-based shows.
+- *Daily* lists contain only talk shows and news, which Sonarr matches by air date.
+
+Each list can use its own root folder, e.g. `/tv/anime`, `/tv` and `/tv/daily`.
+
+### Filters
+
+Every list kind has the same set of filters wherever the data supports it.
+
+| | Anime → Sonarr | Anime → Radarr | TV → Sonarr | Movies → Radarr |
+|---|---|---|---|---|
+| **When**: this/next/last season, a year, a **year range** (with decade buttons), last N years/days, next N days | ✓ | ✓ | ✓ plus "airing this week" | ✓ plus digital vs cinema release |
+| **Genres**: require or exclude, match **all or any** | ✓ | ✓ | ✓ | ✓ |
+| Tags / keywords | ✓ | ✓ | ✓ | ✓ |
+| **Where to watch** | streaming site (Crunchyroll, HIDIVE…) | same | streaming service by region, **network / channel** | streaming service by region |
+| **People** | staff & voice actors | same | cast & crew (via their credits) | cast & crew |
+| **Studios / companies** | animation studio | same | production company | production company |
+| **Runtime** | per episode | film length | per episode | film length |
+| **Episodes / seasons** | episodes | – | seasons & episodes, "has an upcoming episode" | – |
+| **Age rating** (max for your region, optionally keep unrated) | via TMDB* | via TMDB* | ✓ | ✓ |
+| Sequels | ✓ | ✓ | – | first film vs sequels (by collection) |
+| Status | ✓ | ✓ | ✓ plus show type | ✓ |
+| Popularity / score / rating / votes, rank by, keep top N | ✓ | ✓ | ✓ | ✓ |
+| **Keep titles for N days after they drop off** | ✓ | ✓ | ✓ | ✓ |
+
+\* AniList has no age ratings, so anime lists borrow TMDB's through the ID mapping (needs a TMDB key). Titles with no TMDB rating are kept by default.
+
+Episode counts and runtimes that aren't announced yet never exclude a title, so new shows aren't dropped.
 
 ## Features
 

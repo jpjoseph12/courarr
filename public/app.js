@@ -94,6 +94,8 @@ const SEASON_MODES = {
   specific: 'A specific season',
   currentYear: 'This year',
   year: 'A specific year',
+  range: 'A range of years',
+  lastYears: 'In the last … years',
   none: 'Any time',
 };
 const DATE_MODES = {
@@ -103,6 +105,8 @@ const DATE_MODES = {
   nextDays: 'In the next … days',
   thisYear: 'This year',
   year: 'A specific year',
+  range: 'A range of years',
+  lastYears: 'In the last … years',
 };
 const REGIONS = ['US', 'GB', 'CA', 'AU', 'IE', 'NZ', 'DE', 'FR', 'ES', 'IT', 'NL', 'SE', 'NO', 'DK', 'FI', 'BR', 'MX', 'IN', 'JP', 'KR'];
 
@@ -279,6 +283,15 @@ const loadingBlock = (msg) => `<div class="loading-block"><div class="spinner"><
 function describe(l) {
   const f = l.filters;
   const parts = [l.label];
+  const who = (f.people?.length || 0) + (f.studios?.length || 0) + (f.companies?.length || 0);
+  if (l.target === 'sonarr' && f.seriesType && f.seriesType !== (l.source === 'tmdb' ? 'standard' : 'anime')) {
+    parts.push(`${SERIES_TYPES[f.seriesType]} series`);
+  }
+  if (who) parts.push(`${who} ${who > 1 ? 'people/studios' : 'person/studio'}`);
+  if (f.maxCertification) parts.push(`≤ ${f.maxCertification}`);
+  if (f.minRuntime > 0 || f.maxRuntime > 0) parts.push(`${f.minRuntime || 0}–${f.maxRuntime || '∞'} min`);
+  if (f.maxSeasons > 0) parts.push(`≤ ${f.maxSeasons} seasons`);
+  if (f.keepDays > 0) parts.push(`kept ${f.keepDays}d`);
   if (l.source === 'tmdb') {
     const n = f.genresInclude.length + f.genresExclude.length + f.keywordsInclude.length + f.keywordsExclude.length;
     if (f.providers.length) parts.push(`${f.providers.length} streaming service${f.providers.length > 1 ? 's' : ''}`);
@@ -290,6 +303,7 @@ function describe(l) {
     parts.push(f.formats.length ? f.formats.map((x) => FORMAT_NAMES[x] || x).join(', ') : 'All formats');
     if (f.sequels === 'exclude') parts.push('no sequels');
     if (f.sequels === 'only') parts.push('sequels only');
+    if (f.streaming?.length) parts.push(`${f.streaming.length} streaming site${f.streaming.length > 1 ? 's' : ''}`);
     const n = f.genresInclude.length + f.genresExclude.length + f.tagsInclude.length + f.tagsExclude.length;
     if (n) parts.push(`${n} genre/tag filter${n > 1 ? 's' : ''}`);
     parts.push(`top ${f.limit} by ${ANIME_SORTS[f.sort].toLowerCase()}`);
@@ -417,7 +431,8 @@ async function viewEditor(id, params, token) {
       enabled: saved.enabled,
     };
   } else {
-    const tpl = TEMPLATES[Number(params.get('template'))];
+    // Number(null) is 0, so only look a template up when one was actually asked for.
+    const tpl = params.has('template') ? TEMPLATES[Number(params.get('template'))] : null;
     const source = tpl?.source || (params.get('source') === 'tmdb' ? 'tmdb' : 'anilist');
     const target = tpl?.target || (params.get('target') === 'radarr' ? 'radarr' : 'sonarr');
     draft = {
@@ -437,7 +452,9 @@ async function viewEditor(id, params, token) {
     meta,
     tmeta: null,
     tmetaError: null,
-    kwResults: [],
+    entResults: {},
+    networkNames: {},
+    open: new Set(['when', 'what']),
     items: saved?.items?.length ? saved.items : null,
     label: saved?.label || null,
     mode: saved?.items?.length ? 'saved' : 'none',
@@ -466,8 +483,7 @@ async function viewEditor(id, params, token) {
       <form class="form" id="ed-form" autocomplete="off"></form>
       <section id="ed-results"></section>
     </div>
-    <datalist id="tag-list">${meta.tags.map((t) => `<option value="${esc(t.name)}">${esc(t.category)}</option>`).join('')}</datalist>
-    <datalist id="kw-list"></datalist>`;
+    <datalist id="tag-list">${meta.tags.map((t) => `<option value="${esc(t.name)}">${esc(t.category)}</option>`).join('')}</datalist>`;
 
   const form = document.getElementById('ed-form');
   const results = document.getElementById('ed-results');
@@ -485,7 +501,11 @@ async function viewEditor(id, params, token) {
   };
 
   async function loadTmeta() {
-    if (ed.draft.source !== 'tmdb') return;
+    // Anime lists only use TMDB for age ratings, so skip it quietly when there's no key.
+    if (ed.draft.source !== 'tmdb' && !state.settings.tmdbApiKeySet) {
+      ed.tmeta = null;
+      return;
+    }
     const region = ed.draft.filters.region || state.settings.tmdbRegion || 'US';
     ed.tmetaError = null;
     try {
@@ -496,9 +516,38 @@ async function viewEditor(id, params, token) {
     }
   }
 
+  // Names for network ids that aren't in the curated list.
+  async function resolveNetworkNames() {
+    const known = new Set((ed.tmeta?.networks || []).map((x) => x.id));
+    const todo = (ed.draft.filters.networks || []).filter((id) => !known.has(id) && !ed.networkNames[id]);
+    if (!todo.length) return;
+    await Promise.all(
+      todo.map((id) =>
+        api(`/api/tmdb/network/${id}`).then((r) => (ed.networkNames[id] = r.name)).catch(() => {}),
+      ),
+    );
+    if (token === renderToken) renderForm();
+  }
+
+  // Keep the active-filter badges on section headers current without re-rendering the form.
+  function updateCounts() {
+    const counts = sectionCounts(ed.draft);
+    form.querySelectorAll('details.sec').forEach((el) => {
+      const c = counts[el.dataset.sec] || 0;
+      let badge = el.querySelector('summary .sec-count');
+      if (!c) return badge?.remove();
+      if (!badge) {
+        badge = Object.assign(document.createElement('span'), { className: 'sec-count' });
+        el.querySelector('summary').append(badge);
+      }
+      badge.textContent = c;
+    });
+  }
+
   await loadTmeta();
   if (token !== renderToken) return;
   renderForm();
+  resolveNetworkNames();
   renderRes();
   if (saved) renderArrBar();
 
@@ -513,7 +562,7 @@ async function viewEditor(id, params, token) {
 
   form.addEventListener('input', async (e) => {
     const t = e.target;
-    if (t.id === 'kw-input') return searchKw(t.value);
+    if (t.dataset.entType) return searchEntity(t);
     const f = t.dataset.f;
     if (!f) return;
     let v = t.type === 'checkbox' ? t.checked : t.value;
@@ -533,6 +582,15 @@ async function viewEditor(id, params, token) {
       if ((v === 'lastDays' || v === 'nextDays') && !fl.date.days) fl.date.days = 30;
       renderForm();
     }
+    for (const w of ['season', 'date']) {
+      if (f !== `filters.${w}.mode`) continue;
+      const o = fl[w];
+      if (v === 'range' && !o.fromYear) Object.assign(o, { fromYear: new Date().getFullYear() - 10, toYear: new Date().getFullYear() });
+      if (v === 'lastYears' && !o.years) o.years = 5;
+      renderForm();
+    }
+    if (f === 'filters.maxCertification') renderForm();
+    else updateCounts();
     if (f === 'filters.region') {
       fl.providers = [];
       await loadTmeta();
@@ -553,6 +611,7 @@ async function viewEditor(id, params, token) {
       await loadTmeta();
       renderForm();
       renderRes();
+      resolveNetworkNames();
       return;
     }
     if (b.dataset.chip) {
@@ -562,6 +621,7 @@ async function viewEditor(id, params, token) {
       if (i >= 0) arr.splice(i, 1);
       else arr.push(v);
       b.classList.toggle('on', i < 0);
+      updateCounts();
       return;
     }
     if (b.dataset.tri) {
@@ -579,16 +639,29 @@ async function viewEditor(id, params, token) {
       }
       b.classList.toggle('on', f.genresInclude.includes(v));
       b.classList.toggle('not', f.genresExclude.includes(v));
+      updateCounts();
+      return;
+    }
+    if (b.dataset.decade) {
+      const y = Number(b.dataset.decade);
+      setPath(`${b.dataset.path}.fromYear`, y);
+      setPath(`${b.dataset.path}.toYear`, y + 9);
+      renderForm();
       return;
     }
     if (b.dataset.seg) {
+      // Show types differ between Standard and Daily lists, so start the picks afresh.
+      if (b.dataset.seg === 'filters.seriesType' && f.tvTypes) f.tvTypes = [];
       setPath(b.dataset.seg, b.dataset.v);
       if (b.dataset.rerender) renderForm();
-      else b.parentElement.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      else {
+        b.parentElement.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+        updateCounts();
+      }
       return;
     }
     if (b.dataset.tagAdd) return addTag(b.dataset.tagAdd);
-    if (b.dataset.kwAdd) return addKeyword(b.dataset.kwAdd);
+    if (b.dataset.entAdd) return addEntity(b.dataset.entAdd, form.querySelector(`#${b.dataset.entInput}`));
     if (b.dataset.remove) {
       const key = b.dataset.remove;
       f[key] = f[key].filter((t) => String(t.id ?? t) !== b.dataset.v);
@@ -597,9 +670,15 @@ async function viewEditor(id, params, token) {
     }
     if (b.id === 'net-add') {
       const input = form.querySelector('#net-input');
-      const n = Number(input.value);
-      if (!Number.isInteger(n) || n <= 0) return toast('Network IDs are whole numbers (from the TMDB network page URL)', true);
-      if (!f.networks.includes(n)) f.networks.push(n);
+      const id = Number(input.value);
+      if (!Number.isInteger(id) || id <= 0) return toast('Network IDs are whole numbers (from the TMDB network page URL)', true);
+      try {
+        ed.networkNames[id] = (await api(`/api/tmdb/network/${id}`)).name;
+      } catch (err) {
+        return toast(err.message, true);
+      }
+      if (!f.networks.includes(id)) f.networks.push(id);
+      toast(`Added ${ed.networkNames[id]}`);
       renderForm();
       return;
     }
@@ -613,9 +692,9 @@ async function viewEditor(id, params, token) {
       e.preventDefault();
       addTag('tagsInclude');
     }
-    if (e.target.id === 'kw-input') {
+    if (e.target.dataset.entType) {
       e.preventDefault();
-      addKeyword('keywordsInclude');
+      form.querySelector(`[data-ent-input="${e.target.id}"]`)?.click();
     }
     if (e.target.id === 'net-input') {
       e.preventDefault();
@@ -627,6 +706,18 @@ async function viewEditor(id, params, token) {
     e.preventDefault();
     save();
   });
+
+  // 'toggle' doesn't bubble; capture it to remember which sections are open across re-renders.
+  form.addEventListener(
+    'toggle',
+    (e) => {
+      const sec = e.target.dataset?.sec;
+      if (!sec) return;
+      if (e.target.open) ed.open.add(sec);
+      else ed.open.delete(sec);
+    },
+    true,
+  );
 
   function addTag(key) {
     const input = form.querySelector('#tag-input');
@@ -643,36 +734,42 @@ async function viewEditor(id, params, token) {
     form.querySelector('#tag-input')?.focus();
   }
 
-  const searchKw = debounce(async (q) => {
-    if (q.trim().length < 2) return;
+  const searchEntity = debounce(async (input) => {
+    const q = input.value.trim();
+    if (q.length < 2) return;
     try {
-      ed.kwResults = await api(`/api/tmdb/keywords?q=${encodeURIComponent(q.trim())}`);
-      document.getElementById('kw-list').innerHTML = ed.kwResults.map((k) => `<option value="${esc(k.name)}"></option>`).join('');
+      const results = await api(`/api/search/${input.dataset.entType}?q=${encodeURIComponent(q)}`);
+      ed.entResults[input.id] = results;
+      const list = document.getElementById(input.getAttribute('list'));
+      if (list) list.innerHTML = results.map((k) => `<option value="${esc(k.name)}"></option>`).join('');
     } catch {
-      /* keyword search is best-effort */
+      /* search is best-effort */
     }
   }, 250);
 
-  async function addKeyword(key) {
-    const input = form.querySelector('#kw-input');
+  /** Adds the {id,name} matching the search box text to filters[key] (keywords, people, studios…). */
+  async function addEntity(key, input) {
     const val = input.value.trim().toLowerCase();
     if (!val) return;
-    let kw = ed.kwResults.find((k) => k.name.toLowerCase() === val);
-    if (!kw) {
+    const find = () => (ed.entResults[input.id] || []).find((k) => k.name.toLowerCase() === val);
+    let hit = find();
+    if (!hit) {
       try {
-        ed.kwResults = await api(`/api/tmdb/keywords?q=${encodeURIComponent(val)}`);
-        kw = ed.kwResults.find((k) => k.name.toLowerCase() === val) || ed.kwResults[0];
+        ed.entResults[input.id] = await api(`/api/search/${input.dataset.entType}?q=${encodeURIComponent(val)}`);
+        hit = find() || ed.entResults[input.id][0];
       } catch (err) {
         return toast(err.message, true);
       }
     }
-    if (!kw) return toast(`No TMDB keyword matches "${input.value.trim()}"`, true);
+    if (!hit) return toast(`Nothing matches "${input.value.trim()}"`, true);
     const f = ed.draft.filters;
-    f.keywordsInclude = f.keywordsInclude.filter((k) => k.id !== kw.id);
-    f.keywordsExclude = f.keywordsExclude.filter((k) => k.id !== kw.id);
-    f[key].push(kw);
+    // A keyword can be required or excluded, not both.
+    for (const k of key.startsWith('keywords') ? ['keywordsInclude', 'keywordsExclude'] : [key]) {
+      f[k] = (f[k] || []).filter((x) => x.id !== hit.id);
+    }
+    f[key].push(hit);
     renderForm();
-    form.querySelector('#kw-input')?.focus();
+    form.querySelector(`#${input.id}`)?.focus();
   }
 
   const setBusy = (busy, label) => {
@@ -836,7 +933,50 @@ async function viewEditor(id, params, token) {
 
 // --- form pieces shared by both list types ---
 
+const n = (v) => Number(v) > 0;
+
+/** Active-filter counts per section, shown on the collapsed section headers. */
+function sectionCounts(d) {
+  const f = d.filters;
+  const len = (a) => (a || []).length;
+  const tmdb = d.source === 'tmdb';
+  return {
+    what:
+      len(f.genresInclude) + len(f.genresExclude) + len(f.tagsInclude) + len(f.tagsExclude) +
+      len(f.keywordsInclude) + len(f.keywordsExclude) + len(f.statuses) + len(f.tvStatuses) + len(f.tvTypes) +
+      len(f.movieStatuses) + (f.sequels && f.sequels !== 'include' ? 1 : 0) + (tmdb && !f.excludeAnime ? 1 : 0),
+    where: len(f.countries) + len(f.languages) + len(f.streaming) + len(f.providers) + len(f.networks),
+    who: len(f.people) + len(f.studios) + len(f.companies),
+    length:
+      (n(f.minRuntime) || n(f.maxRuntime) ? 1 : 0) + (n(f.minEpisodes) || n(f.maxEpisodes) ? 1 : 0) +
+      (n(f.minSeasons) || n(f.maxSeasons) ? 1 : 0) + (f.maxCertification ? 1 : 0) + (f.upcomingEpisode ? 1 : 0) +
+      (n(f.minRating) || n(f.minVotes) || n(f.minScore) || n(f.minPopularity) ? 1 : 0),
+    output: n(f.keepDays) ? 1 : 0,
+  };
+}
+
+const SECTION_TITLES = {
+  when: 'When',
+  what: 'What',
+  where: 'Where to watch & origin',
+  who: 'People & studios',
+  length: 'Length & rating',
+  output: 'Ranking & output',
+};
+
+function section(ed, id, body) {
+  const count = id === 'when' ? 0 : sectionCounts(ed.draft)[id] || 0;
+  const open = ed.open.has(id) || count > 0;
+  return `
+    <details class="form-sec sec" data-sec="${id}"${open ? ' open' : ''}>
+      <summary><span>${SECTION_TITLES[id]}</span>${count ? `<span class="sec-count">${count}</span>` : ''}</summary>
+      <div class="sec-body">${body}</div>
+    </details>`;
+}
+
 function typeSection(d) {
+  const tv = d.target === 'sonarr';
+  const st = d.filters.seriesType;
   return `
     <div class="form-sec">
       <div class="field">
@@ -853,17 +993,113 @@ function typeSection(d) {
       <div class="field">
         <span class="label">Send to</span>
         <div class="seg">
-          <button type="button" class="sonarr${d.target === 'sonarr' ? ' on' : ''}" data-target="sonarr">Sonarr · series</button>
-          <button type="button" class="radarr${d.target === 'radarr' ? ' on' : ''}" data-target="radarr">Radarr · movies</button>
+          <button type="button" class="sonarr${tv ? ' on' : ''}" data-target="sonarr">Sonarr · series</button>
+          <button type="button" class="radarr${!tv ? ' on' : ''}" data-target="radarr">Radarr · movies</button>
         </div>
-        ${
-          d.target === 'sonarr'
-            ? `<span class="hint">Added to Sonarr as <b>${d.source === 'tmdb' ? 'Standard' : 'Anime'}</b> series.${
-                d.source === 'tmdb' ? ' Anime is left out so it can’t land with the wrong type.' : ''
-              }</span>`
-            : ''
-        }
       </div>
+      ${
+        tv
+          ? `<div class="field">
+              <span class="label">Sonarr series type</span>
+              ${segHtml(
+                'filters.seriesType',
+                st,
+                d.source === 'tmdb' ? [['standard', 'Standard'], ['daily', 'Daily']] : [['anime', 'Anime'], ['standard', 'Standard']],
+                true,
+              )}
+              <span class="hint">${
+                d.source === 'tmdb'
+                  ? st === 'daily'
+                    ? 'Only date-based shows (talk shows, news), added as <b>Daily</b> series.'
+                    : 'Added as <b>Standard</b> series. Talk shows and news are left out — they need a Daily list.'
+                  : st === 'standard'
+                    ? 'Added as <b>Standard</b> series (season/episode numbering) instead of absolute anime numbering.'
+                    : 'Added as <b>Anime</b> series (absolute episode numbering).'
+              }${d.source === 'tmdb' ? ' Anime is left out so it can’t land with the wrong type.' : ''}</span>
+            </div>`
+          : ''
+      }
+    </div>`;
+}
+
+function yearRangeHtml(path, from, to) {
+  const decades = [1970, 1980, 1990, 2000, 2010, 2020];
+  return `
+    <div class="row">
+      <input class="input" type="number" min="1900" max="2100" data-f="${path}.fromYear" value="${esc(from)}" aria-label="From year" />
+      <span class="muted" style="flex:none">to</span>
+      <input class="input" type="number" min="1900" max="2100" data-f="${path}.toYear" value="${esc(to)}" aria-label="To year" />
+    </div>
+    <div class="chips">${decades
+      .map((y) => `<button type="button" class="chip${Number(from) === y && Number(to) === y + 9 ? ' on' : ''}" data-decade="${y}" data-path="${path}">${y}s</button>`)
+      .join('')}</div>`;
+}
+
+function rangeRow(label, minPath, maxPath, f, minKey, maxKey, unit) {
+  return `
+    <div class="field">
+      <span class="label">${label}${unit ? ` <span class="label-note">— ${unit}</span>` : ''}</span>
+      <div class="row">
+        <input class="input" type="number" min="0" data-f="${minPath}" value="${n(f[minKey]) ? esc(f[minKey]) : ''}" placeholder="min" />
+        <span class="muted" style="flex:none">–</span>
+        <input class="input" type="number" min="0" data-f="${maxPath}" value="${n(f[maxKey]) ? esc(f[maxKey]) : ''}" placeholder="max" />
+      </div>
+    </div>`;
+}
+
+/** A search box that adds {id,name} chips (keywords, people, studios, companies). */
+function entityField(ed, { type, keys, label, placeholder, hint }) {
+  const f = ed.draft.filters;
+  const [incKey, excKey] = keys;
+  const chips = [
+    ...removableChips(f[incKey] || [], incKey, 'on'),
+    ...(excKey ? removableChips(f[excKey] || [], excKey, 'not') : []),
+  ].join('');
+  return `
+    <div class="field">
+      <label for="ent-${incKey}">${label}</label>
+      <div class="tag-add">
+        <input class="input" id="ent-${incKey}" list="dl-${incKey}" data-ent-type="${type}" placeholder="${esc(placeholder)}" />
+        <button type="button" class="btn btn-sm" data-ent-add="${incKey}" data-ent-input="ent-${incKey}">${excKey ? 'Require' : 'Add'}</button>
+        ${excKey ? `<button type="button" class="btn btn-sm" data-ent-add="${excKey}" data-ent-input="ent-${incKey}">Exclude</button>` : ''}
+      </div>
+      <datalist id="dl-${incKey}"></datalist>
+      ${chips ? `<div class="chips">${chips}</div>` : ''}
+      ${hint ? `<span class="hint">${hint}</span>` : ''}
+    </div>`;
+}
+
+function certField(ed, certs) {
+  const f = ed.draft.filters;
+  const region = f.region || state.settings?.tmdbRegion || 'US';
+  if (!certs) {
+    return `<div class="field"><span class="label">Age rating</span>
+      <span class="hint">${ed.draft.source === 'anilist' ? 'Uses TMDB’s ratings — add a TMDB key in <a href="#/settings">Settings</a> to use it.' : 'Loading…'}</span></div>`;
+  }
+  return `
+    <div class="field">
+      <label for="ed-cert">Max age rating <span class="label-note">— ${esc(region)}</span></label>
+      <select class="select" id="ed-cert" data-f="filters.maxCertification">
+        <option value="">Any</option>
+        ${certs.map((c) => `<option value="${esc(c.code)}"${f.maxCertification === c.code ? ' selected' : ''}>${esc(c.code)}</option>`).join('')}
+      </select>
+      ${
+        f.maxCertification
+          ? `<label class="check"><input type="checkbox" data-f="filters.keepUnrated"${f.keepUnrated ? ' checked' : ''} />
+              <span><b>Keep titles with no rating</b><span class="hint">${
+                ed.draft.source === 'anilist' ? 'Many anime have no TMDB rating for your region.' : 'Otherwise unrated titles are left out.'
+              }</span></span></label>`
+          : ''
+      }
+    </div>`;
+}
+
+function keepDaysField(f) {
+  return `
+    <div class="field">
+      <label for="ed-keep">Keep titles after they drop off</label>
+      <div class="row"><input class="input" id="ed-keep" type="number" min="0" max="365" data-f="filters.keepDays" value="${esc(f.keepDays || 0)}" /><span class="muted" style="flex:none">days</span></div>
+      <span class="hint">0 = off. Stops titles flickering in and out of the feed when they hover around the cut-off.</span>
     </div>`;
 }
 
@@ -909,7 +1145,19 @@ const segHtml = (path, current, options, rerender = false) =>
     .join('')}</div>`;
 
 const removableChips = (list, key, cls) =>
-  list.map((t) => `<button type="button" class="chip ${cls}" data-remove="${key}" data-v="${esc(t.id ?? t)}">${esc(t.name ?? t)} <span class="x">×</span></button>`).join('');
+  list.map((t) => `<button type="button" class="chip ${cls}" data-remove="${key}" data-v="${esc(t.id ?? t)}">${esc(t.name ?? t)} <span class="x">×</span></button>`);
+
+function genresField(f, genres, num) {
+  return `
+    <div class="field">
+      <div class="row" style="align-items:center">
+        <span class="label" style="flex:1">Genres</span>
+        <div style="flex:none;width:190px">${segHtml('filters.genreMatch', f.genreMatch || 'all', [['all', 'Match all'], ['any', 'Match any']])}</div>
+      </div>
+      <span class="hint">Click once to require, twice to exclude.</span>
+      <div class="chips">${genres.map((g) => (num ? triHtml(f, g.id, g.name, true) : triHtml(f, g, g))).join('')}</div>
+    </div>`;
+}
 
 // --- anime form ---
 
@@ -917,98 +1165,118 @@ function animeFormHtml(ed) {
   const d = ed.draft;
   const f = d.filters;
   const s = f.season;
+  const tv = d.target === 'sonarr';
   const year = new Date().getFullYear();
-  const formats = d.target === 'radarr' ? ['MOVIE', 'SPECIAL', 'OVA', 'ONA'] : ['TV', 'TV_SHORT', 'ONA', 'OVA', 'SPECIAL', 'MOVIE'];
+  const formats = tv ? ['TV', 'TV_SHORT', 'ONA', 'OVA', 'SPECIAL', 'MOVIE'] : ['MOVIE', 'SPECIAL', 'OVA', 'ONA'];
+  const certs = ed.tmeta?.certifications;
+
+  const when = `
+    <div class="field">
+      <select class="select" id="ed-season" data-f="filters.season.mode" aria-label="When">
+        ${Object.entries(SEASON_MODES).map(([k, v]) => `<option value="${k}"${s.mode === k ? ' selected' : ''}>${v}</option>`).join('')}
+      </select>
+      ${
+        s.mode === 'specific'
+          ? `<div class="row">
+              <select class="select" data-f="filters.season.season">
+                ${['WINTER', 'SPRING', 'SUMMER', 'FALL'].map((x) => `<option value="${x}"${s.season === x ? ' selected' : ''}>${x[0] + x.slice(1).toLowerCase()}</option>`).join('')}
+              </select>
+              <input class="input" type="number" min="1940" max="${year + 2}" data-f="filters.season.year" value="${esc(s.year)}" />
+            </div>`
+          : ''
+      }
+      ${s.mode === 'year' ? `<input class="input" type="number" min="1940" max="${year + 2}" data-f="filters.season.year" value="${esc(s.year)}" />` : ''}
+      ${s.mode === 'range' ? yearRangeHtml('filters.season', s.fromYear, s.toYear) : ''}
+      ${s.mode === 'lastYears' ? `<div class="row"><input class="input" type="number" min="1" max="50" data-f="filters.season.years" value="${esc(s.years)}" /><span class="muted" style="flex:none">years</span></div>` : ''}
+      ${
+        ['current', 'next', 'previous', 'currentYear', 'lastYears'].includes(s.mode)
+          ? `<span class="hint">Rolls forward automatically${['currentYear', 'lastYears'].includes(s.mode) ? ' each January' : ` — switches ${state.settings?.seasonRolloverDays ?? 14} days before a season starts`}.</span>`
+          : ''
+      }
+    </div>`;
+
+  const what = `
+    <div class="field">
+      <span class="label">Format</span>
+      <div class="chips">${formats.map((x) => chipHtml(f.formats, 'formats', x, FORMAT_NAMES[x])).join('')}</div>
+    </div>
+    ${genresField(f, ed.meta.genres, false)}
+    <div class="field">
+      <label for="tag-input">Tags</label>
+      <div class="tag-add">
+        <input class="input" id="tag-input" list="tag-list" placeholder="Isekai, Iyashikei, Time Skip…" />
+        <button type="button" class="btn btn-sm" data-tag-add="tagsInclude">Require</button>
+        <button type="button" class="btn btn-sm" data-tag-add="tagsExclude">Exclude</button>
+      </div>
+      ${
+        f.tagsInclude.length + f.tagsExclude.length
+          ? `<div class="chips">${removableChips(f.tagsInclude, 'tagsInclude', 'on').join('')}${removableChips(f.tagsExclude, 'tagsExclude', 'not').join('')}</div>`
+          : ''
+      }
+    </div>
+    <div class="field">
+      <span class="label">Status <span class="label-note">— none = any</span></span>
+      <div class="chips">${Object.entries(STATUS_NAMES).map(([k, v]) => chipHtml(f.statuses, 'statuses', k, v)).join('')}</div>
+    </div>
+    <div class="field">
+      <span class="label">Sequels</span>
+      ${segHtml('filters.sequels', f.sequels, [['include', 'Include'], ['exclude', 'New only'], ['only', 'Sequels only']])}
+    </div>`;
+
+  const where = `
+    <div class="field">
+      <span class="label">Streaming on <span class="label-note">— none = any</span></span>
+      <div class="chips">${(ed.meta.streaming || []).map((x) => chipHtml(f.streaming, 'streaming', x.id, x.name, true)).join('')}</div>
+    </div>
+    <div class="field">
+      <span class="label">Country of origin</span>
+      <div class="chips">${Object.entries(ANIME_COUNTRIES).map(([k, v]) => chipHtml(f.countries, 'countries', k, v)).join('')}</div>
+    </div>`;
+
+  const who = `
+    ${entityField(ed, { type: 'studio', keys: ['studios'], label: 'Studios', placeholder: 'MAPPA, Kyoto Animation, ufotable…', hint: 'Matches the main animation studio. Any of them.' })}
+    ${entityField(ed, { type: 'staff', keys: ['people'], label: 'People', placeholder: 'Director, composer or voice actor…', hint: 'Anime any of these people worked on or voiced.' })}`;
+
+  const length = `
+    ${rangeRow(tv ? 'Episode length' : 'Runtime', 'filters.minRuntime', 'filters.maxRuntime', f, 'minRuntime', 'maxRuntime', 'minutes')}
+    ${tv ? rangeRow('Episodes', 'filters.minEpisodes', 'filters.maxEpisodes', f, 'minEpisodes', 'maxEpisodes') : ''}
+    <span class="hint">Titles whose length isn’t announced yet are kept.</span>
+    ${certField(ed, certs)}
+    <div class="row">
+      <div class="field">
+        <label for="ed-pop">Min popularity</label>
+        <input class="input" id="ed-pop" type="number" min="0" step="500" data-f="filters.minPopularity" value="${esc(f.minPopularity)}" />
+      </div>
+      <div class="field">
+        <label for="ed-score">Min score</label>
+        <input class="input" id="ed-score" type="number" min="0" max="100" data-f="filters.minScore" value="${esc(f.minScore)}" />
+      </div>
+    </div>
+    <span class="hint">Popularity = AniList members who added it. Score is 0–100; new shows often have none yet.</span>`;
+
+  const output = `
+    <div class="row">
+      <div class="field">
+        <label for="ed-sort">Rank by</label>
+        <select class="select" id="ed-sort" data-f="filters.sort">
+          ${Object.entries(ANIME_SORTS).map(([k, v]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${v}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="ed-limit">Keep top</label>
+        <input class="input" id="ed-limit" type="number" min="1" max="500" data-f="filters.limit" value="${esc(f.limit)}" />
+      </div>
+    </div>
+    ${keepDaysField(f)}`;
 
   return `
     ${typeSection(d)}
-    <div class="form-sec">
-      <div class="field">
-        <label for="ed-season">When</label>
-        <select class="select" id="ed-season" data-f="filters.season.mode">
-          ${Object.entries(SEASON_MODES).map(([k, v]) => `<option value="${k}"${s.mode === k ? ' selected' : ''}>${v}</option>`).join('')}
-        </select>
-        ${
-          s.mode === 'specific'
-            ? `<div class="row">
-                <select class="select" data-f="filters.season.season">
-                  ${['WINTER', 'SPRING', 'SUMMER', 'FALL'].map((x) => `<option value="${x}"${s.season === x ? ' selected' : ''}>${x[0] + x.slice(1).toLowerCase()}</option>`).join('')}
-                </select>
-                <input class="input" type="number" min="1940" max="${year + 2}" data-f="filters.season.year" value="${esc(s.year)}" />
-              </div>`
-            : ''
-        }
-        ${s.mode === 'year' ? `<input class="input" type="number" min="1940" max="${year + 2}" data-f="filters.season.year" value="${esc(s.year)}" />` : ''}
-        ${
-          ['current', 'next', 'previous', 'currentYear'].includes(s.mode)
-            ? `<span class="hint">Rolls forward automatically${s.mode === 'currentYear' ? ' each January' : ` — switches ${state.settings?.seasonRolloverDays ?? 14} days before a season starts`}.</span>`
-            : ''
-        }
-      </div>
-      <div class="field">
-        <span class="label">Format</span>
-        <div class="chips">${formats.map((x) => chipHtml(f.formats, 'formats', x, FORMAT_NAMES[x])).join('')}</div>
-      </div>
-      <div class="field">
-        <span class="label">Status <span class="label-note">— none selected = any</span></span>
-        <div class="chips">${Object.entries(STATUS_NAMES).map(([k, v]) => chipHtml(f.statuses, 'statuses', k, v)).join('')}</div>
-      </div>
-      <div class="field">
-        <span class="label">Sequels</span>
-        ${segHtml('filters.sequels', f.sequels, [['include', 'Include'], ['exclude', 'New only'], ['only', 'Sequels only']])}
-      </div>
-      <div class="field">
-        <span class="label">Country of origin</span>
-        <div class="chips">${Object.entries(ANIME_COUNTRIES).map(([k, v]) => chipHtml(f.countries, 'countries', k, v)).join('')}</div>
-      </div>
-    </div>
-
-    <div class="form-sec">
-      <div class="field">
-        <span class="label">Genres</span>
-        <span class="hint">Click once to require, twice to exclude.</span>
-        <div class="chips">${ed.meta.genres.map((g) => triHtml(f, g, g)).join('')}</div>
-      </div>
-      <div class="field">
-        <label for="tag-input">Tags</label>
-        <div class="tag-add">
-          <input class="input" id="tag-input" list="tag-list" placeholder="Isekai, Iyashikei, Time Skip…" />
-          <button type="button" class="btn btn-sm" data-tag-add="tagsInclude">Require</button>
-          <button type="button" class="btn btn-sm" data-tag-add="tagsExclude">Exclude</button>
-        </div>
-        ${
-          f.tagsInclude.length + f.tagsExclude.length
-            ? `<div class="chips">${removableChips(f.tagsInclude, 'tagsInclude', 'on')}${removableChips(f.tagsExclude, 'tagsExclude', 'not')}</div>`
-            : ''
-        }
-      </div>
-    </div>
-
-    <div class="form-sec">
-      <div class="row">
-        <div class="field">
-          <label for="ed-pop">Min popularity</label>
-          <input class="input" id="ed-pop" type="number" min="0" step="500" data-f="filters.minPopularity" value="${esc(f.minPopularity)}" />
-        </div>
-        <div class="field">
-          <label for="ed-score">Min score</label>
-          <input class="input" id="ed-score" type="number" min="0" max="100" data-f="filters.minScore" value="${esc(f.minScore)}" />
-        </div>
-      </div>
-      <div class="row">
-        <div class="field">
-          <label for="ed-sort">Rank by</label>
-          <select class="select" id="ed-sort" data-f="filters.sort">
-            ${Object.entries(ANIME_SORTS).map(([k, v]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${v}</option>`).join('')}
-          </select>
-        </div>
-        <div class="field">
-          <label for="ed-limit">Keep top</label>
-          <input class="input" id="ed-limit" type="number" min="1" max="500" data-f="filters.limit" value="${esc(f.limit)}" />
-        </div>
-      </div>
-      <span class="hint">Popularity = AniList members who added the show. Score is 0–100; new shows often have none yet, so a minimum score hides them.</span>
-    </div>
+    ${section(ed, 'when', when)}
+    ${section(ed, 'what', what)}
+    ${section(ed, 'where', where)}
+    ${section(ed, 'who', who)}
+    ${section(ed, 'length', length)}
+    ${section(ed, 'output', output)}
     ${advancedSection(d)}
     ${footSection(ed)}`;
 }
@@ -1022,6 +1290,7 @@ function tmdbFormHtml(ed) {
   const year = new Date().getFullYear();
   const m = ed.tmeta;
   const trending = f.collection === 'trending';
+  const byPeople = tv && f.people.length > 0;
   const region = f.region || state.settings?.tmdbRegion || 'US';
   const dateModes = Object.entries(DATE_MODES).filter(([k]) => tv || k !== 'airing');
 
@@ -1037,146 +1306,163 @@ function tmdbFormHtml(ed) {
       ${advancedSection(d)}${footSection(ed)}`;
   }
 
+  const when = `
+    <div class="field">
+      <span class="label">Source</span>
+      ${segHtml('filters.collection', f.collection, [['discover', 'Discover (all filters)'], ['trending', 'Trending this week']], true)}
+      ${trending || byPeople ? `<span class="hint">${trending ? 'Trending' : 'With people chosen, a person’s credits'} can’t use streaming, network, company or keyword filters.</span>` : ''}
+    </div>
+    <div class="field">
+      <label for="ed-date">${tv ? 'Premiered / airing' : 'Released'}</label>
+      <select class="select" id="ed-date" data-f="filters.date.mode">
+        ${dateModes.map(([k, v]) => `<option value="${k}"${f.date.mode === k ? ' selected' : ''}>${v}</option>`).join('')}
+      </select>
+      ${f.date.mode === 'year' ? `<input class="input" type="number" min="1900" max="${year + 3}" data-f="filters.date.year" value="${esc(f.date.year)}" />` : ''}
+      ${f.date.mode === 'range' ? yearRangeHtml('filters.date', f.date.fromYear, f.date.toYear) : ''}
+      ${f.date.mode === 'lastYears' ? `<div class="row"><input class="input" type="number" min="1" max="50" data-f="filters.date.years" value="${esc(f.date.years)}" /><span class="muted" style="flex:none">years</span></div>` : ''}
+      ${
+        f.date.mode === 'lastDays' || f.date.mode === 'nextDays'
+          ? `<div class="row"><input class="input" type="number" min="1" max="3650" data-f="filters.date.days" value="${esc(f.date.days)}" /><span class="muted" style="flex:none">days</span></div>`
+          : ''
+      }
+      ${['lastDays', 'nextDays', 'thisYear', 'lastYears', 'airing'].includes(f.date.mode) ? '<span class="hint">Moves with the calendar on every refresh.</span>' : ''}
+    </div>
+    ${
+      !tv
+        ? `<div class="field">
+            <span class="label">Release type</span>
+            ${segHtml('filters.releaseType', f.releaseType, [['any', 'Any'], ['theatrical', 'Cinemas'], ['digital', 'Digital / disc']])}
+            <span class="hint">“Digital / disc” dates by the streaming, rental or Blu-ray release in ${esc(region)} — good for Radarr, since that’s when a release exists to grab.</span>
+          </div>`
+        : ''
+    }`;
+
+  const what = `
+    ${genresField(f, m.genres, true)}
+    <label class="check">
+      <input type="checkbox" data-f="filters.excludeAnime"${f.excludeAnime ? ' checked' : ''} />
+      <span><b>Leave out anime</b><span class="hint">Use an Anime list for those${tv ? ' — they need the Anime series type' : ''}.</span></span>
+    </label>
+    ${trending || byPeople ? '' : entityField(ed, { type: 'keyword', keys: ['keywordsInclude', 'keywordsExclude'], label: 'Keywords', placeholder: 'time travel, heist, based on novel…', hint: 'Required keywords match if <i>any</i> of them apply.' })}
+    ${
+      tv
+        ? `<div class="field">
+            <span class="label">Show type <span class="label-note">— none = any</span></span>
+            <div class="chips">${m.tvTypes
+              .filter((t) => (f.seriesType === 'daily') === [1, 5].includes(t.id))
+              .map((t) => chipHtml(f.tvTypes, 'tvTypes', t.id, t.name, true))
+              .join('')}</div>
+          </div>
+          <div class="field">
+            <span class="label">Status <span class="label-note">— none = any</span></span>
+            <div class="chips">${m.tvStatuses.map((t) => chipHtml(f.tvStatuses, 'tvStatuses', t.id, t.name, true)).join('')}</div>
+          </div>`
+        : `<div class="field">
+            <span class="label">Status <span class="label-note">— none = any</span></span>
+            <div class="chips">${m.movieStatuses.map((t) => chipHtml(f.movieStatuses, 'movieStatuses', t, t)).join('')}</div>
+          </div>
+          <div class="field">
+            <span class="label">Sequels</span>
+            ${segHtml('filters.sequels', f.sequels, [['include', 'Include'], ['exclude', 'First films only'], ['only', 'Sequels only']])}
+            <span class="hint">Based on the film’s TMDB collection (e.g. a trilogy).</span>
+          </div>`
+    }`;
+
+  const customNets = f.networks.filter((id) => !m.networks.some((x) => x.id === id));
+  const where = `
+    <div class="field">
+      <span class="label">Original language <span class="label-note">— none = any</span></span>
+      <div class="chips">${m.languages.map((l) => chipHtml(f.languages, 'languages', l.code, l.name)).join('')}</div>
+    </div>
+    <div class="field">
+      <span class="label">Country of origin <span class="label-note">— none = any</span></span>
+      <div class="chips">${m.countries.map((c) => chipHtml(f.countries, 'countries', c.code, c.name)).join('')}</div>
+    </div>
+    ${
+      trending || byPeople
+        ? ''
+        : `<div class="field">
+            <div class="row" style="align-items:flex-end">
+              <span class="label" style="flex:1">Streaming on <span class="label-note">— subscription / free</span></span>
+              <select class="select" data-f="filters.region" title="Streaming & age-rating region" style="flex:none;width:90px;height:30px">
+                ${REGIONS.map((r) => `<option value="${r}"${region === r ? ' selected' : ''}>${r}</option>`).join('')}
+              </select>
+            </div>
+            <div class="chips">${m.providers.map((p) => chipHtml(f.providers, 'providers', p.id, p.name, true)).join('')}</div>
+          </div>
+          ${
+            tv
+              ? `<div class="field">
+                  <span class="label">Network / channel <span class="label-note">— original broadcaster</span></span>
+                  <div class="chips">
+                    ${m.networks.map((x) => chipHtml(f.networks, 'networks', x.id, x.name, true)).join('')}
+                    ${customNets.map((id) => `<button type="button" class="chip on" data-remove="networks" data-v="${id}">${esc(ed.networkNames[id] || `Network ${id}`)} <span class="x">×</span></button>`).join('')}
+                  </div>
+                  <div class="tag-add">
+                    <input class="input" id="net-input" inputmode="numeric" placeholder="Other network ID (from themoviedb.org/network/…)" />
+                    <button type="button" class="btn btn-sm" id="net-add">Add</button>
+                  </div>
+                </div>`
+              : ''
+          }`
+    }`;
+
+  const who = `
+    ${entityField(ed, {
+      type: 'person',
+      keys: ['people'],
+      label: tv ? 'People' : 'Cast & crew',
+      placeholder: 'Actor, director, writer…',
+      hint: tv ? 'Shows any of these people acted in or made.' : 'Films with any of these people.',
+    })}
+    ${trending || byPeople ? '' : entityField(ed, { type: 'company', keys: ['companies'], label: 'Production companies', placeholder: 'A24, Pixar, BBC Studios…', hint: 'Any of them.' })}`;
+
+  const length = `
+    ${rangeRow(tv ? 'Episode length' : 'Runtime', 'filters.minRuntime', 'filters.maxRuntime', f, 'minRuntime', 'maxRuntime', 'minutes')}
+    ${
+      tv
+        ? `${rangeRow('Seasons', 'filters.minSeasons', 'filters.maxSeasons', f, 'minSeasons', 'maxSeasons')}
+          ${rangeRow('Episodes', 'filters.minEpisodes', 'filters.maxEpisodes', f, 'minEpisodes', 'maxEpisodes')}
+          <label class="check"><input type="checkbox" data-f="filters.upcomingEpisode"${f.upcomingEpisode ? ' checked' : ''} />
+            <span><b>Has an upcoming episode</b><span class="hint">Only shows with a next episode scheduled.</span></span></label>`
+        : ''
+    }
+    ${certField(ed, m.certifications)}
+    <div class="row">
+      <div class="field">
+        <label for="ed-rating">Min rating</label>
+        <input class="input" id="ed-rating" type="number" min="0" max="10" step="0.5" data-f="filters.minRating" value="${esc(f.minRating)}" />
+      </div>
+      <div class="field">
+        <label for="ed-votes">Min votes</label>
+        <input class="input" id="ed-votes" type="number" min="0" step="10" data-f="filters.minVotes" value="${esc(f.minVotes)}" />
+      </div>
+    </div>
+    <span class="hint">Rating is TMDB’s 0–10 user score. A vote minimum keeps obscure titles with a handful of 10/10 votes out.</span>`;
+
+  const output = `
+    <div class="row">
+      <div class="field">
+        <label for="ed-sort">Rank by</label>
+        <select class="select" id="ed-sort" data-f="filters.sort"${trending || byPeople ? ' disabled title="Ranked by TMDB popularity"' : ''}>
+          ${m.sorts.map((x) => `<option value="${x.id}"${f.sort === x.id ? ' selected' : ''}>${x.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="ed-limit">Keep top</label>
+        <input class="input" id="ed-limit" type="number" min="1" max="500" data-f="filters.limit" value="${esc(f.limit)}" />
+      </div>
+    </div>
+    ${keepDaysField(f)}`;
+
   return `
     ${typeSection(d)}
-    <div class="form-sec">
-      <div class="field">
-        <span class="label">Source</span>
-        ${segHtml('filters.collection', f.collection, [['discover', 'Discover (all filters)'], ['trending', 'Trending this week']], true)}
-        ${trending ? '<span class="hint">Trending uses genre, language, country, rating and date filters. Streaming, networks and keywords only apply to Discover.</span>' : ''}
-      </div>
-      <div class="field">
-        <label for="ed-date">${tv ? 'Premiered / airing' : 'Released'}</label>
-        <select class="select" id="ed-date" data-f="filters.date.mode">
-          ${dateModes.map(([k, v]) => `<option value="${k}"${f.date.mode === k ? ' selected' : ''}>${v}</option>`).join('')}
-        </select>
-        ${f.date.mode === 'year' ? `<input class="input" type="number" min="1900" max="${year + 3}" data-f="filters.date.year" value="${esc(f.date.year)}" />` : ''}
-        ${
-          f.date.mode === 'lastDays' || f.date.mode === 'nextDays'
-            ? `<div class="row"><input class="input" type="number" min="1" max="3650" data-f="filters.date.days" value="${esc(f.date.days)}" /><span class="muted" style="flex:none">days</span></div>`
-            : ''
-        }
-        ${['lastDays', 'nextDays', 'thisYear', 'airing'].includes(f.date.mode) ? '<span class="hint">Moves with the calendar on every refresh.</span>' : ''}
-      </div>
-      ${
-        !tv
-          ? `<div class="field">
-              <span class="label">Release type</span>
-              ${segHtml('filters.releaseType', f.releaseType, [['any', 'Any'], ['theatrical', 'Cinemas'], ['digital', 'Digital / disc']])}
-              <span class="hint">“Digital / disc” dates by the streaming, rental or Blu-ray release${trending ? '' : ` in ${esc(region)}`} — good for Radarr, since that’s when a release exists to grab.</span>
-            </div>`
-          : ''
-      }
-      ${
-        tv
-          ? `<div class="field">
-              <span class="label">Show type <span class="label-note">— none = any</span></span>
-              <div class="chips">${m.tvTypes.map((t) => chipHtml(f.tvTypes, 'tvTypes', t.id, t.name, true)).join('')}</div>
-            </div>
-            <div class="field">
-              <span class="label">Status <span class="label-note">— none = any</span></span>
-              <div class="chips">${m.tvStatuses.map((t) => chipHtml(f.tvStatuses, 'tvStatuses', t.id, t.name, true)).join('')}</div>
-            </div>`
-          : ''
-      }
-    </div>
-
-    <div class="form-sec">
-      <div class="field">
-        <span class="label">Genres</span>
-        <span class="hint">Click once to require, twice to exclude.</span>
-        <div class="chips">${m.genres.map((g) => triHtml(f, g.id, g.name, true)).join('')}</div>
-      </div>
-      <label class="check">
-        <input type="checkbox" data-f="filters.excludeAnime"${f.excludeAnime ? ' checked' : ''} />
-        <span><b>Leave out anime</b><span class="hint">Keeps anime out of this list${tv ? ' so it isn’t added as a Standard series' : ''}. Use an Anime list for those.</span></span>
-      </label>
-    </div>
-
-    <div class="form-sec">
-      <div class="field">
-        <span class="label">Original language <span class="label-note">— none = any</span></span>
-        <div class="chips">${m.languages.map((l) => chipHtml(f.languages, 'languages', l.code, l.name)).join('')}</div>
-      </div>
-      <div class="field">
-        <span class="label">Country of origin <span class="label-note">— none = any</span></span>
-        <div class="chips">${m.countries.map((c) => chipHtml(f.countries, 'countries', c.code, c.name)).join('')}</div>
-      </div>
-    </div>
-
-    ${
-      trending
-        ? ''
-        : `<div class="form-sec">
-            <div class="field">
-              <div class="row" style="align-items:flex-end">
-                <span class="label" style="flex:1">Streaming on <span class="label-note">— subscription / free</span></span>
-                <select class="select" data-f="filters.region" title="Streaming region" style="flex:none;width:90px;height:30px">
-                  ${REGIONS.map((r) => `<option value="${r}"${region === r ? ' selected' : ''}>${r}</option>`).join('')}
-                </select>
-              </div>
-              <div class="chips">${m.providers.map((p) => chipHtml(f.providers, 'providers', p.id, p.name, true)).join('')}</div>
-            </div>
-            ${
-              tv
-                ? `<div class="field">
-                    <span class="label">Network <span class="label-note">— original broadcaster</span></span>
-                    <div class="chips">
-                      ${m.networks.map((n) => chipHtml(f.networks, 'networks', n.id, n.name, true)).join('')}
-                      ${f.networks
-                        .filter((id) => !m.networks.some((n) => n.id === id))
-                        .map((id) => `<button type="button" class="chip on" data-remove="networks" data-v="${id}">Network ${id} <span class="x">×</span></button>`)
-                        .join('')}
-                    </div>
-                    <div class="tag-add">
-                      <input class="input" id="net-input" inputmode="numeric" placeholder="Other network ID (from themoviedb.org/network/…)" />
-                      <button type="button" class="btn btn-sm" id="net-add">Add</button>
-                    </div>
-                  </div>`
-                : ''
-            }
-            <div class="field">
-              <label for="kw-input">Keywords</label>
-              <div class="tag-add">
-                <input class="input" id="kw-input" list="kw-list" placeholder="time travel, heist, based on novel…" />
-                <button type="button" class="btn btn-sm" data-kw-add="keywordsInclude">Require</button>
-                <button type="button" class="btn btn-sm" data-kw-add="keywordsExclude">Exclude</button>
-              </div>
-              ${
-                f.keywordsInclude.length + f.keywordsExclude.length
-                  ? `<div class="chips">${removableChips(f.keywordsInclude, 'keywordsInclude', 'on')}${removableChips(f.keywordsExclude, 'keywordsExclude', 'not')}</div>`
-                  : ''
-              }
-              <span class="hint">Required keywords match if <i>any</i> of them apply.</span>
-            </div>
-          </div>`
-    }
-
-    <div class="form-sec">
-      <div class="row">
-        <div class="field">
-          <label for="ed-rating">Min rating</label>
-          <input class="input" id="ed-rating" type="number" min="0" max="10" step="0.5" data-f="filters.minRating" value="${esc(f.minRating)}" />
-        </div>
-        <div class="field">
-          <label for="ed-votes">Min votes</label>
-          <input class="input" id="ed-votes" type="number" min="0" step="10" data-f="filters.minVotes" value="${esc(f.minVotes)}" />
-        </div>
-      </div>
-      <div class="row">
-        <div class="field">
-          <label for="ed-sort">Rank by</label>
-          <select class="select" id="ed-sort" data-f="filters.sort"${trending ? ' disabled title="Trending is ranked by TMDB"' : ''}>
-            ${m.sorts.map((s) => `<option value="${s.id}"${f.sort === s.id ? ' selected' : ''}>${s.name}</option>`).join('')}
-          </select>
-        </div>
-        <div class="field">
-          <label for="ed-limit">Keep top</label>
-          <input class="input" id="ed-limit" type="number" min="1" max="500" data-f="filters.limit" value="${esc(f.limit)}" />
-        </div>
-      </div>
-      <span class="hint">Rating is TMDB’s 0–10 user score. A minimum vote count keeps obscure titles with a handful of 10/10 votes out.</span>
-    </div>
+    ${section(ed, 'when', when)}
+    ${section(ed, 'what', what)}
+    ${section(ed, 'where', where)}
+    ${section(ed, 'who', who)}
+    ${section(ed, 'length', length)}
+    ${section(ed, 'output', output)}
     ${advancedSection(d)}
     ${footSection(ed)}`;
 }
@@ -1243,19 +1529,40 @@ function resultsHtml(ed) {
     ${shown.length ? `<div class="grid">${shown.map((it) => itemHtml(it, items.indexOf(it), ed)).join('')}</div>` : '<div class="empty"><p>Nothing here.</p></div>'}`;
 }
 
+function keptUntil(it, ed) {
+  const days = ed.saved?.filters?.keepDays || 0;
+  return new Date(new Date(it.lastSeen).getTime() + days * 86_400_000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
 function itemHtml(it, idx, ed) {
   const { target, source } = ed.draft;
   const src = it.matchSource;
   const anime = source === 'anilist';
   let meta;
   let ids;
+  const mins = (v) => (v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m` : `${v}m`);
   if (anime) {
-    meta = [FORMAT_NAMES[it.format] || it.format, it.episodes ? `${it.episodes} ep` : null, it.score ? `${it.score}%` : null, it.studio];
+    meta = [
+      FORMAT_NAMES[it.format] || it.format,
+      it.episodes ? `${it.episodes} ep` : null,
+      it.format === 'MOVIE' && it.runtime ? mins(it.runtime) : null,
+      it.score ? `${it.score}%` : null,
+      it.certification,
+      it.studio,
+    ];
     const idLabel = target === 'sonarr' ? 'TVDB' : 'TMDB';
     const url = target === 'sonarr' ? `https://thetvdb.com/dereferrer/series/${it.externalId}` : `https://www.themoviedb.org/movie/${it.externalId}`;
     ids = it.externalId ? `<a href="${url}" target="_blank" rel="noopener">${idLabel} ${it.externalId}</a>` : `<span class="faint">no ${idLabel} ID</span>`;
   } else {
-    meta = [it.year, it.rating ? `★ ${it.rating}` : null, it.votes ? `${it.votes.toLocaleString()} votes` : null, it.language?.toUpperCase()];
+    meta = [
+      it.year,
+      it.rating ? `★ ${it.rating}` : null,
+      it.seasons ? `${it.seasons} season${it.seasons > 1 ? 's' : ''}` : null,
+      it.episodes ? `${it.episodes} eps` : null,
+      it.format === 'MOVIE' && it.runtime ? mins(it.runtime) : null,
+      it.certification,
+      it.language?.toUpperCase(),
+    ];
     ids = [
       `<a href="${esc(it.siteUrl)}" target="_blank" rel="noopener">TMDB ${it.tmdbId}</a>`,
       it.tvdbId ? `<a href="https://thetvdb.com/dereferrer/series/${it.tvdbId}" target="_blank" rel="noopener">TVDB ${it.tvdbId}</a>` : null,
@@ -1278,6 +1585,7 @@ function itemHtml(it, idx, ed) {
           ${it.inLibrary ? '<span class="badge lib">In library</span>' : ''}
           ${it.sequel ? '<span class="badge">Sequel</span>' : ''}
           ${it.excluded ? '<span class="badge src-none">Excluded</span>' : ''}
+          ${it.retained ? `<span class="badge kept" title="Dropped out of the results; kept because of “Keep titles after they drop off”">Kept until ${esc(keptUntil(it, ed))}</span>` : ''}
         </div>
       </div>
       <div class="item-body">
@@ -1483,9 +1791,9 @@ async function arrDialog(list, arrInfo) {
     const v = dialog.querySelector('#arr-type .on')?.dataset.v;
     el.innerHTML =
       v === rec
-        ? `Recommended for ${SOURCE_NAMES[list.source].toLowerCase()} lists.`
-        : `<span class="warn-text">This is ${list.source === 'tmdb' ? 'a TV list' : 'an anime list'} — ${SERIES_TYPES[rec]} is usually right. ${
-            v === 'anime' ? 'Anime type uses absolute episode numbering.' : 'Standard type breaks absolute-numbered anime releases.'
+        ? 'Matches this list’s series type.'
+        : `<span class="warn-text">This list is built for ${SERIES_TYPES[rec]} series (see “Sonarr series type” on the list). ${
+            v === 'anime' ? 'Anime type uses absolute episode numbering.' : v === 'daily' ? 'Daily type expects date-based episodes.' : 'Standard type expects season/episode numbering.'
           }</span>`;
   };
   typeHint();
@@ -1622,7 +1930,7 @@ async function viewSettings() {
             <label class="check"><input type="checkbox" name="triggerArrSync"${s.triggerArrSync ? ' checked' : ''} />
               <span><b>Tell Sonarr/Radarr to sync import lists after a refresh</b><span class="hint">Otherwise they pick up changes on their own list interval (Radarr: every 12h minimum).</span></span></label>
             <ol class="steps">
-              <li>With a connection above, open a list and click <b>Add to Sonarr/Radarr</b>. Anime lists are added with series type <b>Anime</b>, TV lists with <b>Standard</b>.</li>
+              <li>With a connection above, open a list and click <b>Add to Sonarr/Radarr</b>. Each list is added with its own series type — <b>Anime</b>, <b>Standard</b> or <b>Daily</b> (set on the list).</li>
               <li>Without one: Sonarr → Settings → Import Lists → + → <b>Custom List</b> (set Series Type yourself); Radarr → <b>Custom Lists</b>. Paste the feed URL from the list card.</li>
             </ol>
           </div>
