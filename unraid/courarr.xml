@@ -24,5 +24,6 @@
   <Config Name="AppData" Target="/config" Default="/mnt/user/appdata/courarr" Mode="rw" Description="Database (lists, settings) and the cached anime ID mapping." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/courarr</Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID the app runs as." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID the app runs as." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Reset login" Target="COURARR_RESET_AUTH" Default="false" Mode="" Description="Forgot the password? Set to true, start the container, create a new login in the web UI, then set this back to false. Lists and settings are kept." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
   <Config Name="UMASK" Target="UMASK" Default="002" Mode="" Description="File creation mask." Type="Variable" Display="advanced" Required="false" Mask="false">002</Config>
 </Container>

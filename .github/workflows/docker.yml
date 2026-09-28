@@ -87,10 +87,17 @@ jobs:
           curl -fsS http://localhost:6161/api/health | grep -q '"ok":true'
           curl -fsS http://localhost:6161/ | grep -q 'app.js?v='
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:6161/feed/missing)" = 404
+          # the API is locked until an account exists; create one like the first-run screen does
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:6161/api/lists)" = 401
+          curl -fsS -c jar -X POST http://localhost:6161/api/auth/setup -H 'Content-Type: application/json' \
+            -d '{"username":"smoke","password":"smoke-test-password"}' | grep -q '"ok":true'
           # a list can be created and its feed served
-          curl -fsS -X POST http://localhost:6161/api/lists -H 'Content-Type: application/json' \
+          curl -fsS -b jar -X POST http://localhost:6161/api/lists -H 'Content-Type: application/json' -H 'X-Courarr: 1' \
             -d '{"name":"Smoke test","target":"sonarr"}' | grep -q '"slug":"smoke-test"'
           test "$(curl -fsS http://localhost:6161/feed/smoke-test)" = "[]"
+          # scripts can use the generated API key
+          KEY=$(curl -fsS -b jar http://localhost:6161/api/settings | sed -n 's/.*"apiKey":"\([0-9a-f]*\)".*/\1/p')
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Api-Key: $KEY" http://localhost:6161/api/refresh)" = 202
           # runs as PUID:PGID and /config belongs to them
           docker exec courarr sh -c 'grep "^Uid:" /proc/1/status' | grep -q $'\t1001\t'
           test "$(stat -c '%u:%g' "$RUNNER_TEMP/config/courarr.db")" = "1001:1002"

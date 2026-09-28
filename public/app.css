@@ -433,3 +433,49 @@ details.form-sec.sec { display: block; padding: 0; }
   .results-head .tabs { flex-wrap: wrap; }
   .arr-bar .spacer { display: none; }
 }
+
+/* ---------- login & setup ---------- */
+
+body.bare .top { display: none; }
+.auth-wrap { min-height: calc(100vh - 60px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px 0; }
+.auth-card {
+  width: min(420px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 28px 28px 24px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+}
+.auth-card h1 { font-size: 20px; }
+.auth-brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 20px; margin-bottom: 6px; }
+.auth-brand img { border-radius: 10px; }
+.auth-form { display: flex; flex-direction: column; gap: 14px; }
+.auth-submit { height: 40px; }
+.auth-error { color: var(--err); font-size: 13px; min-height: 1em; }
+.auth-error:empty { display: none; }
+.auth-help code, .setup code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.auth-foot { color: var(--faint); font-size: 12.5px; margin: 0; }
+.steps-mini { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--faint); }
+.steps-mini span { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--panel-3); font-weight: 700; }
+.steps-mini span.on { background: var(--accent); color: var(--accent-ink); }
+.steps-mini i { flex: 0 0 14px; height: 1px; background: var(--line-2); }
+
+.setup { max-width: 820px; margin: 0 auto; }
+.setup-steps { list-style: none; display: flex; gap: 6px; margin: 0 0 16px; padding: 0; flex-wrap: wrap; }
+.setup-steps li { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--faint); padding: 6px 12px 6px 6px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); }
+.setup-steps li span { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--panel-3); font-size: 12px; font-weight: 700; }
+.setup-steps li.on { color: var(--text); border-color: rgba(255, 122, 147, 0.5); }
+.setup-steps li.on span { background: var(--accent); color: var(--accent-ink); }
+.setup-steps li.done span { background: rgba(74, 222, 128, 0.18); color: var(--ok); }
+.setup-panel .panel-body { gap: 16px; }
+.setup-panel h2 { font-size: 18px; }
+.setup-panel p { margin: 0; }
+.setup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.setup-box { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 14px; display: flex; flex-direction: column; gap: 12px; background: var(--bg); }
+.setup-foot { display: flex; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line); }
+ol.how { margin: 0; padding-left: 20px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; }
+ol.how a, .setup-panel a { color: var(--accent-2); }
+.setup-summary { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.setup-summary li { display: flex; gap: 10px; align-items: baseline; color: var(--muted); }
+.setup-summary li span { width: 20px; text-align: center; color: var(--faint); }
+.setup-summary li.ok { color: var(--text); }
+.setup-summary li.ok span { color: var(--ok); }
+
+/* The .btn display rule would otherwise beat the hidden attribute. */
+[hidden] { display: none !important; }

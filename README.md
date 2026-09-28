@@ -106,12 +106,13 @@ Whatever you run it on, Courarr needs one port and one folder. Everything else i
 | `PUID` / `PGID` | environment variables | the user/group that should own `/config` | Optional. Default `99`/`100` (Unraid's `nobody:users`). On most Linux hosts use `1000`/`1000`; `id -u` and `id -g` show yours. |
 | `UMASK` | environment variable | e.g. `002` | Optional. Default `002`. |
 | `PORT` | environment variable | a port number | Rarely needed. Changes the port *inside* the container. Change the host side of the port mapping instead. |
+| `COURARR_RESET_AUTH` | environment variable | `true` once, then `false` | Only if you forget the password. It removes the login at start-up so you can create a new one; lists and settings are kept. |
 
 There's **nothing else to mount**. Courarr never touches your media files; Sonarr and Radarr do the downloading. It needs outbound internet access to reach AniList, TMDB, OMDb and GitHub, plus network access to Sonarr, Radarr and Maintainerr if you connect them.
 
 Image: `ghcr.io/jpjoseph12/courarr:latest` (linux/amd64 and linux/arm64, so Raspberry Pi 4/5 and ARM NAS models work too). Every build is also tagged `sha-<commit>`, so you can pin an exact build; release tags such as `:0.1.0` appear once versions are tagged.
 
-**API keys are entered in the web UI, not as environment variables.** See [First-time setup](#first-time-setup).
+**API keys are entered in the web UI, not as environment variables.** The first visit walks you through them; see [First-time setup](#first-time-setup).
 
 ---
 
@@ -262,7 +263,16 @@ Two rules of thumb:
 
 ## First-time setup
 
-Open the web UI → **Settings**. Nothing is required for anime lists; everything else is optional and switched on by adding its key.
+Open the web UI. The first visit walks you through it:
+
+1. **Create your login.**
+2. **Connect Sonarr & Radarr** (optional): URL and API key, tested as you go.
+3. **Add TMDB** for TV & movie lists (free key; the guide links to where to get it). Pick your region and the original languages you watch.
+4. **Add OMDb** for critic & audience scores (optional, free).
+5. **Set the feed address** Sonarr/Radarr will use, and optionally protect feeds with a key.
+6. **Start a first list** from a template.
+
+Every step can be skipped and changed later in **Settings**. You can re-run the guide from *Settings → Login & security*. Nothing is required for anime lists; everything else is switched on by adding its key:
 
 | Feature | What to add | Where to get it |
 |---|---|---|
@@ -305,10 +315,20 @@ Your lists and settings live in `/config` and carry over.
 
 ## Security
 
-- **The web UI has no login**, like most apps meant for a home network. Anyone who can reach port 6161 can change your lists and read the connection settings.
-- **Don't expose it to the internet.** If you want remote access, use a VPN (WireGuard, Tailscale) or a reverse proxy that adds authentication (Authelia, Authentik, basic auth).
+- **Login:** the first visit asks you to create the one account; after that, the web UI and API need it.
+  - Passwords are stored as salted scrypt hashes, and sessions are HttpOnly cookies (30 days with "Keep me logged in").
+  - Repeated wrong passwords from one address are blocked for 10 minutes.
+  - Changing the password (Settings → Login & security) signs out every other browser.
+- **Forgot the password?** Start the container once with `COURARR_RESET_AUTH=true`, create a new login, then set it back to `false`. On Unraid it's the *Reset login* field under *Show more settings*. Your lists and settings are kept.
+- **Scripts and automations** use the **API key** from Settings → Login & security:
+  - send it as an `X-Api-Key` header, or as `?apikey=` on the URL;
+  - e.g. `curl -X POST -H "X-Api-Key: <key>" http://<server>:6161/api/refresh`.
+- **Feeds** (`/feed/<name>`) stay readable without logging in, because Sonarr/Radarr can't log in.
+  - Turn on **Protect feed URLs with a key** to add a secret `?key=…` to every feed URL.
+  - Import lists Courarr created are updated automatically; re-copy any you added by hand.
+- **Still, don't expose Courarr directly to the internet.** For remote access, use a VPN (WireGuard, Tailscale) or a reverse proxy with HTTPS. Behind HTTPS, the session cookie is marked `Secure` automatically.
 - **API keys are stored in plain text** in `/config/courarr.db`, the same way Sonarr and Radarr store theirs. Treat that folder, and its backups, as private.
-- **The feed URLs** (`/feed/<name>`) need to stay reachable by Sonarr/Radarr. If you put Courarr behind an authenticating proxy, allow `/feed/*` from them.
+- **Behind an authenticating proxy** (Authelia, Authentik…), allow `/feed/*` through for Sonarr/Radarr.
 
 ---
 
@@ -324,6 +344,9 @@ Your lists and settings live in `/config` and carry over.
 | Refresh happens at the wrong hour | Set `TZ` on the container (Unraid does this for you). |
 | "Permission denied" writing `/config` | Set `PUID`/`PGID` to the owner of the host folder, or `chown` it to them. |
 | Page looks broken after an update | Hard-refresh the browser (Ctrl+F5). |
+| Forgot the password | Start the container once with `COURARR_RESET_AUTH=true`, create a new login, then set it back to `false`. |
+| "Too many failed attempts" | Wait 10 minutes, or restart the container. |
+| Sonarr says the feed is *Unauthorized* | Feed protection is on. Re-copy the feed URL (it includes `?key=…`), or use **Add to Sonarr** so Courarr keeps it updated. |
 
 **Logs:** `docker logs courarr`, or on Unraid, the container's **Logs** link. The **Activity** page in Courarr shows every refresh and what it did.
 

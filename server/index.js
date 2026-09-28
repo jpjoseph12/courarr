@@ -3,6 +3,15 @@ import * as store from './db.js';
 import { app } from './app.js';
 import { ensureMapping } from './mapping.js';
 import { schedule } from './scheduler.js';
+import { ensureKeys, isConfigured, resetAccount } from './auth.js';
+
+// Forgot the password? Start once with COURARR_RESET_AUTH=true, then remove it again.
+if (/^(1|true|yes)$/i.test(process.env.COURARR_RESET_AUTH || '')) {
+  resetAccount();
+  log('COURARR_RESET_AUTH is set: the login was removed — open the web UI to create a new one, then remove the variable');
+}
+ensureKeys();
+if (!isConfigured()) log('No login yet — open the web UI to create one');
 
 app.listen(PORT, () => log(`Courarr ${VERSION} listening on :${PORT} (TZ ${TZ})`));
 schedule(store.getSettings().schedule);

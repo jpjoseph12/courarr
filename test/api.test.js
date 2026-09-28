@@ -15,6 +15,7 @@ import { startMaintainerr, startWebhookSink } from './fixtures/mock-services.mjs
 const servers = [];
 const url = (s) => `http://127.0.0.1:${s.address().port}`;
 let C; // Courarr base URL
+let cookie = ''; // logged-in session
 let sonarr;
 let radarr;
 let maintainerr;
@@ -56,6 +57,14 @@ before(async () => {
   });
   servers.push(courarr);
   C = url(courarr);
+  // Every API route needs a login now: create the account and keep its session cookie.
+  const r = await fetch(`${C}/api/auth/setup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'correct horse battery' }),
+  });
+  assert.equal(r.status, 201);
+  cookie = r.headers.get('set-cookie').split(';')[0];
 });
 
 after(() => {
@@ -68,7 +77,7 @@ after(() => {
 async function api(method, p, body) {
   const res = await fetch(C + p, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    headers: { Cookie: cookie, 'X-Courarr': '1', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
