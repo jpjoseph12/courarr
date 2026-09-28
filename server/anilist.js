@@ -1,8 +1,10 @@
 import { log } from './config.js';
 
-const ENDPOINT = 'https://graphql.anilist.co';
+// ANILIST_URL / ANILIST_MIN_GAP_MS let tests point at a local mock without the rate-limit wait.
+const ENDPOINT = process.env.ANILIST_URL || 'https://graphql.anilist.co';
 // AniList allows 90 req/min but drops to 30/min when degraded; stay under the lower limit.
-const MIN_GAP_MS = 2100;
+const MIN_GAP_MS = Number(process.env.ANILIST_MIN_GAP_MS ?? 2100);
+const RETRY_MS = Number(process.env.ANILIST_RETRY_MS ?? 5000);
 const PER_PAGE = 50;
 const MAX_PAGES = 10;
 // Filters AniList can't express are applied locally, so scan further to still fill the list.
@@ -89,13 +91,14 @@ export async function gql(query, variables = {}, attempt = 0) {
   });
 
   if (res.status === 429 && attempt < 3) {
-    const retryAfter = Number(res.headers.get('retry-after')) || 60;
+    const header = res.headers.get('retry-after');
+    const retryAfter = header !== null && Number.isFinite(Number(header)) ? Number(header) : 60;
     log(`AniList rate limited, retrying in ${retryAfter}s`);
     await sleep(retryAfter * 1000);
     return gql(query, variables, attempt + 1);
   }
   if (res.status >= 500 && attempt < 2) {
-    await sleep(5000);
+    await sleep(RETRY_MS);
     return gql(query, variables, attempt + 1);
   }
 

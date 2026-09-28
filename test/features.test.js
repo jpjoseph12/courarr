@@ -80,6 +80,9 @@ test('drip-feed releases N new titles per refresh, best-ranked first', () => {
   // Lists saved before drip existed: everything already in the feed stays there.
   const legacy = fresh([1, 2, 3]);
   assert.ok(applyDrip(legacy, fresh([1, 2, 3, 4]), 1, t1).every((i) => !i.queued));
+  // A sequel of a series already in the feed goes straight in, free.
+  const shared = applyDrip(r1, [...fresh([1, 2, 3]), { key: 7, title: 'T1 S2', externalId: 10 }, ...fresh([4])], 1, t1);
+  assert.deepEqual(shared.filter((i) => !i.queued).map((i) => i.key), [1, 2, 3, 7, 4]);
   // No limit set: nothing is queued.
   assert.ok(applyDrip([], fresh([1, 2, 3]), 0, t0).every((i) => !i.queued));
 });

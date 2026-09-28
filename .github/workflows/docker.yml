@@ -1,5 +1,7 @@
-name: Build & publish image
+name: Test, build & publish
 
+# Every push and pull request runs the full test suite (with coverage thresholds) and a smoke
+# test of the real Docker image. Only pushes to main / version tags publish the image.
 on:
   push:
     branches: [main]
@@ -7,12 +9,16 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
-  packages: write
 
 jobs:
   test:
+    name: Tests & coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,17 +27,93 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm test
 
-  image:
+      - name: Check the web UI script parses
+        run: npm run test:ui
+
+      # Unit + API tests against local stand-ins for AniList, TMDB, OMDb, Sonarr, Radarr,
+      # Maintainerr and webhooks — no network or API keys needed. Fails if coverage drops
+      # below the thresholds in package.json (lines 90%, branches 75%, functions 85%).
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Coverage summary
+        if: always()
+        run: node test/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: ignore
+
+  smoke:
+    name: Container smoke test
     needs: test
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: courarr:ci
+          cache-from: type=gha
+
+      - name: Start it like a user would
+        run: |
+          mkdir -p "$RUNNER_TEMP/config"
+          docker run -d --name courarr -p 6161:6161 \
+            -e TZ=Europe/London -e PUID=1001 -e PGID=1002 \
+            -v "$RUNNER_TEMP/config:/config" courarr:ci
+
+      - name: Wait for the API
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:6161/api/health && exit 0
+            sleep 2
+          done
+          echo "Courarr never answered"; exit 1
+
+      - name: Check the running container
+        run: |
+          set -eux
+          # API, web UI (with version-stamped assets) and feeds respond
+          curl -fsS http://localhost:6161/api/health | grep -q '"ok":true'
+          curl -fsS http://localhost:6161/ | grep -q 'app.js?v='
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:6161/feed/missing)" = 404
+          # a list can be created and its feed served
+          curl -fsS -X POST http://localhost:6161/api/lists -H 'Content-Type: application/json' \
+            -d '{"name":"Smoke test","target":"sonarr"}' | grep -q '"slug":"smoke-test"'
+          test "$(curl -fsS http://localhost:6161/feed/smoke-test)" = "[]"
+          # runs as PUID:PGID and /config belongs to them
+          docker exec courarr sh -c 'grep "^Uid:" /proc/1/status' | grep -q $'\t1001\t'
+          test "$(stat -c '%u:%g' "$RUNNER_TEMP/config/courarr.db")" = "1001:1002"
+          # honours TZ for the schedule
+          docker logs courarr 2>&1 | grep -q '(TZ Europe/London)'
+
+      - name: Container logs
+        if: always()
+        run: docker logs courarr || true
+
+  image:
+    name: Publish image
+    needs: [test, smoke]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -49,7 +131,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

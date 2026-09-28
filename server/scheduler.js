@@ -20,7 +20,8 @@ export function schedule(expr) {
     log('Scheduled refresh disabled');
     return;
   }
-  job = new Cron(expr, { timezone: TZ, protect: true }, () => {
+  // unref: the timer alone never keeps the process alive (matters for tests).
+  job = new Cron(expr, { timezone: TZ, protect: true, unref: true }, () => {
     refresh({ trigger: 'schedule' }).catch((e) => log(`Scheduled refresh failed: ${e.message}`));
   });
   log(`Scheduled refresh "${expr}" (${TZ}), next at ${job.nextRun()?.toISOString()}`);
