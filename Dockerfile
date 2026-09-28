@@ -26,7 +26,7 @@ HEALTHCHECK --interval=60s --timeout=5s --start-period=20s \
   CMD wget -qO- "http://127.0.0.1:${PORT}/api/health" >/dev/null || exit 1
 
 LABEL org.opencontainers.image.title="Courarr" \
-      org.opencontainers.image.description="Seasonal anime lists from AniList as Custom Lists for Sonarr and Radarr" \
+      org.opencontainers.image.description="Auto-updating Sonarr and Radarr lists: anime from AniList, TV and movies from TMDB" \
       org.opencontainers.image.source="https://github.com/jpjoseph12/courarr" \
       org.opencontainers.image.licenses="MIT"
 

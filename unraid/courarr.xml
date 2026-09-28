@@ -9,7 +9,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/jpjoseph12/courarr/issues</Support>
   <Project>https://github.com/jpjoseph12/courarr</Project>
-  <Overview>Courarr builds filtered anime lists from AniList (this season, next season, a year, genres, tags, popularity…) and serves each one as a Custom List URL for Sonarr (TVDB IDs) or Radarr (TMDB IDs). Lists refresh every day at 3 AM or on demand from the web UI.</Overview>
+  <Overview>Auto-updating lists for Sonarr and Radarr. Anime lists come from AniList (this season, next season, genres, tags, popularity…) and are added to Sonarr as Anime series; TV &amp; movie lists come from TMDB (trending, new releases, streaming service, network, genres, keywords…) and are added as Standard series. Courarr can create the Sonarr/Radarr import lists for you, and refreshes every day at 3 AM or on demand from the web UI.</Overview>
   <Category>MediaApp:Video Downloaders: Tools:</Category>
   <WebUI>http://[IP]:[PORT:6161]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/jpjoseph12/courarr/main/unraid/courarr.xml</TemplateURL>

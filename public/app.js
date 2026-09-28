@@ -37,6 +37,7 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   back: '<path d="M15 18l-6-6 6-6"/>',
   play: '<path d="M7 4v16l13-8z"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
 };
 const icon = (n) => `<svg class="ico" viewBox="0 0 24 24">${ICONS[n]}</svg>`;
 
@@ -68,10 +69,24 @@ async function copyText(text) {
   toast('Feed URL copied');
 }
 
+const debounce = (fn, ms) => {
+  let t;
+  return (...a) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...a), ms);
+  };
+};
+
+// ---------- vocabulary ----------
+
+const ARR = { sonarr: 'Sonarr', radarr: 'Radarr' };
+const SOURCE_NAMES = { anilist: 'Anime', tmdb: 'TV & movies' };
+const SERIES_TYPES = { standard: 'Standard', anime: 'Anime', daily: 'Daily' };
+
 const FORMAT_NAMES = { TV: 'TV', TV_SHORT: 'TV Short', ONA: 'ONA', OVA: 'OVA', MOVIE: 'Movie', SPECIAL: 'Special', MUSIC: 'Music' };
 const STATUS_NAMES = { RELEASING: 'Airing', NOT_YET_RELEASED: 'Upcoming', FINISHED: 'Finished', CANCELLED: 'Cancelled', HIATUS: 'Hiatus' };
-const SORT_NAMES = { POPULARITY_DESC: 'Popularity', SCORE_DESC: 'Score', TRENDING_DESC: 'Trending', FAVOURITES_DESC: 'Favourites', START_DATE_DESC: 'Newest' };
-const COUNTRIES = { JP: 'Japan', CN: 'China', KR: 'Korea', TW: 'Taiwan' };
+const ANIME_SORTS = { POPULARITY_DESC: 'Popularity', SCORE_DESC: 'Score', TRENDING_DESC: 'Trending', FAVOURITES_DESC: 'Favourites', START_DATE_DESC: 'Newest' };
+const ANIME_COUNTRIES = { JP: 'Japan', CN: 'China', KR: 'Korea', TW: 'Taiwan' };
 const SEASON_MODES = {
   current: 'This season',
   next: 'Next season',
@@ -81,40 +96,76 @@ const SEASON_MODES = {
   year: 'A specific year',
   none: 'Any time',
 };
-const SOURCES = {
+const DATE_MODES = {
+  any: 'Any time',
+  airing: 'Airing this week',
+  lastDays: 'In the last … days',
+  nextDays: 'In the next … days',
+  thisYear: 'This year',
+  year: 'A specific year',
+};
+const REGIONS = ['US', 'GB', 'CA', 'AU', 'IE', 'NZ', 'DE', 'FR', 'ES', 'IT', 'NL', 'SE', 'NO', 'DK', 'FI', 'BR', 'MX', 'IN', 'JP', 'KR'];
+
+const MATCH = {
   mapping: ['Mapped', 'ID from the anime mapping database'],
   prequel: ['Via prequel', 'Sequel — uses the earlier season’s series'],
   imdb: ['Via IMDb', 'Found in Radarr by IMDb ID'],
   lookup: ['Title match', 'Found by exact title search in Sonarr/Radarr'],
   override: ['Manual', 'ID you set by hand'],
+  tmdb: ['TMDB', 'TMDB title (with its TVDB id for Sonarr)'],
+  sonarr: ['Via Sonarr', 'TVDB id found by Sonarr from the TMDB id'],
+  tmdbOnly: ['No TVDB yet', 'Neither TMDB nor Sonarr knows its TVDB id yet — left out until one appears'],
 };
-const ARR = { sonarr: 'Sonarr', radarr: 'Radarr' };
 const FALLBACK_GENRES = ['Action', 'Adventure', 'Comedy', 'Drama', 'Ecchi', 'Fantasy', 'Horror', 'Mahou Shoujo', 'Mecha', 'Music', 'Mystery', 'Psychological', 'Romance', 'Sci-Fi', 'Slice of Life', 'Sports', 'Supernatural', 'Thriller'];
 
 const TEMPLATES = [
   {
-    name: 'Popular this season',
+    name: 'Popular anime this season',
+    source: 'anilist',
     target: 'sonarr',
     desc: 'Top 50 TV & ONA anime airing this season.',
     filters: { season: { mode: 'current' }, formats: ['TV', 'TV_SHORT', 'ONA'], countries: ['JP'], limit: 50 },
   },
   {
-    name: 'New shows next season',
+    name: 'New anime next season',
+    source: 'anilist',
     target: 'sonarr',
     desc: 'Upcoming season, first seasons only — no sequels.',
     filters: { season: { mode: 'next' }, formats: ['TV', 'ONA'], countries: ['JP'], sequels: 'exclude', limit: 30 },
   },
   {
     name: 'Anime movies this year',
+    source: 'anilist',
     target: 'radarr',
     desc: 'Popular anime films released this year.',
     filters: { season: { mode: 'currentYear' }, formats: ['MOVIE'], countries: ['JP'], limit: 25 },
+  },
+  {
+    name: 'Trending TV',
+    source: 'tmdb',
+    target: 'sonarr',
+    desc: 'What everyone is watching this week. No anime.',
+    filters: { collection: 'trending', minVotes: 20, limit: 30 },
+  },
+  {
+    name: 'New series premieres',
+    source: 'tmdb',
+    target: 'sonarr',
+    desc: 'Scripted shows and miniseries that premiered in the last 30 days.',
+    filters: { date: { mode: 'lastDays', days: 30 }, tvTypes: [4, 2], minVotes: 10, limit: 30 },
+  },
+  {
+    name: 'New movies on digital',
+    source: 'tmdb',
+    target: 'radarr',
+    desc: 'Out on streaming/rental in the last 60 days, rated 6.5+.',
+    filters: { date: { mode: 'lastDays', days: 60 }, releaseType: 'digital', minRating: 6.5, minVotes: 100, limit: 40 },
   },
 ];
 
 // ---------- global state ----------
 
-const state = { settings: null, meta: null, status: null };
+const state = { settings: null, meta: null, status: null, tmdbMeta: {} };
 
 async function loadSettings() {
   state.settings = await api('/api/settings');
@@ -122,28 +173,20 @@ async function loadSettings() {
 
 async function ensureMeta() {
   if (state.meta) return state.meta;
-  try {
-    state.meta = await api('/api/meta');
-  } catch (e) {
-    toast(`Couldn't load genres/tags from AniList: ${e.message}`, true);
-    const d = {
-      season: { mode: 'current' }, statuses: [], countries: ['JP'], genresInclude: [], genresExclude: [],
-      tagsInclude: [], tagsExclude: [], minPopularity: 0, minScore: 0, sequels: 'include', sort: 'POPULARITY_DESC', limit: 50,
-    };
-    return {
-      genres: FALLBACK_GENRES,
-      tags: [],
-      defaults: {
-        sonarr: { ...d, formats: ['TV', 'TV_SHORT', 'ONA'] },
-        radarr: { ...d, season: { mode: 'currentYear' }, formats: ['MOVIE'] },
-      },
-    };
-  }
+  state.meta = await api('/api/meta');
+  if (!state.meta.genres.length) state.meta.genres = FALLBACK_GENRES;
   return state.meta;
+}
+
+async function loadTmdbMeta(kind, region) {
+  const key = `${kind}:${region}`;
+  if (!state.tmdbMeta[key]) state.tmdbMeta[key] = await api(`/api/tmdb/meta?kind=${kind}&region=${region}`);
+  return state.tmdbMeta[key];
 }
 
 const feedUrl = (slug) => `${state.settings?.feedBaseUrl || location.origin}/feed/${slug}`;
 const arrConnected = (target) => !!(state.settings?.[`${target}Url`] && state.settings?.[`${target}ApiKeySet`]);
+const tmdbKind = (target) => (target === 'sonarr' ? 'tv' : 'movie');
 
 // ---------- status bar & polling ----------
 
@@ -165,7 +208,7 @@ function renderStatus() {
     text = s.nextRun ? `Next refresh ${fmtNext(s.nextRun)}` : 'Scheduled refresh off';
   }
   statusEl.innerHTML = `<span class="${dot}"></span><span>${esc(text)}</span>`;
-  statusEl.title = `Mapping: ${s.mapping.entries.toLocaleString()} entries, updated ${ago(s.mapping.updatedAt)}\nTimezone: ${s.timezone}`;
+  statusEl.title = `Anime mapping: ${s.mapping.entries.toLocaleString()} entries, updated ${ago(s.mapping.updatedAt)}\nTimezone: ${s.timezone}`;
   refreshAllBtn.disabled = s.running;
   refreshAllBtn.classList.toggle('loading', s.running);
 }
@@ -204,7 +247,7 @@ let renderToken = 0;
 const routes = [
   [/^#?\/?$/, () => viewLists()],
   [/^#\/lists\/new(?:\?(.*))?$/, (m, t) => viewEditor(null, new URLSearchParams(m[1] || ''), t)],
-  [/^#\/lists\/(\d+)$/, (m, t) => viewEditor(Number(m[1]), null, t)],
+  [/^#\/lists\/(\d+)(?:\?(.*))?$/, (m, t) => viewEditor(Number(m[1]), new URLSearchParams(m[2] || ''), t)],
   [/^#\/settings$/, () => viewSettings()],
   [/^#\/activity$/, () => viewActivity()],
 ];
@@ -215,9 +258,6 @@ async function route() {
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === section));
   const token = ++renderToken;
   view.onclick = null;
-  view.oninput = null;
-  view.onsubmit = null;
-  view.onkeydown = null;
   for (const [re, fn] of routes) {
     const m = hash.match(re);
     if (!m) continue;
@@ -236,15 +276,38 @@ const loadingBlock = (msg) => `<div class="loading-block"><div class="spinner"><
 
 // ---------- lists view ----------
 
-function describe(f, seasonLabel) {
-  const parts = [seasonLabel];
-  parts.push(f.formats.length ? f.formats.map((x) => FORMAT_NAMES[x] || x).join(', ') : 'All formats');
-  if (f.sequels === 'exclude') parts.push('no sequels');
-  if (f.sequels === 'only') parts.push('sequels only');
-  const g = f.genresInclude.length + f.genresExclude.length + f.tagsInclude.length + f.tagsExclude.length;
-  if (g) parts.push(`${g} genre/tag filter${g > 1 ? 's' : ''}`);
-  parts.push(`top ${f.limit} by ${SORT_NAMES[f.sort].toLowerCase()}`);
+function describe(l) {
+  const f = l.filters;
+  const parts = [l.label];
+  if (l.source === 'tmdb') {
+    const n = f.genresInclude.length + f.genresExclude.length + f.keywordsInclude.length + f.keywordsExclude.length;
+    if (f.providers.length) parts.push(`${f.providers.length} streaming service${f.providers.length > 1 ? 's' : ''}`);
+    if (f.networks.length) parts.push(`${f.networks.length} network${f.networks.length > 1 ? 's' : ''}`);
+    if (n) parts.push(`${n} genre/keyword filter${n > 1 ? 's' : ''}`);
+    if (f.excludeAnime) parts.push('no anime');
+    parts.push(`top ${f.limit}`);
+  } else {
+    parts.push(f.formats.length ? f.formats.map((x) => FORMAT_NAMES[x] || x).join(', ') : 'All formats');
+    if (f.sequels === 'exclude') parts.push('no sequels');
+    if (f.sequels === 'only') parts.push('sequels only');
+    const n = f.genresInclude.length + f.genresExclude.length + f.tagsInclude.length + f.tagsExclude.length;
+    if (n) parts.push(`${n} genre/tag filter${n > 1 ? 's' : ''}`);
+    parts.push(`top ${f.limit} by ${ANIME_SORTS[f.sort].toLowerCase()}`);
+  }
   return parts.join(' · ');
+}
+
+function templatesHtml() {
+  return `<div class="templates">
+    ${TEMPLATES.map(
+      (t, i) => `<div class="template" data-template="${i}" role="button" tabindex="0">
+        <span class="row" style="flex:none;gap:6px">
+          <span class="pill ${t.source === 'anilist' ? 'anime' : 'normal'}" style="flex:none">${SOURCE_NAMES[t.source]}</span>
+          <span class="pill ${t.target}" style="flex:none">${t.target}</span>
+        </span>
+        <b>${esc(t.name)}</b><span>${esc(t.desc)}</span></div>`,
+    ).join('')}
+  </div>`;
 }
 
 async function viewLists() {
@@ -256,11 +319,10 @@ async function viewLists() {
     <div class="page-head">
       <div>
         <h1>Lists</h1>
-        <p>Current season: <b>${esc(st.currentSeason)}</b> · next up: ${esc(st.nextSeason)}</p>
+        <p>Anime season: <b>${esc(st.currentSeason)}</b> · next up: ${esc(st.nextSeason)}</p>
       </div>
       <div class="page-actions">
-        <a class="btn" href="#/lists/new?target=radarr">${icon('plus')}Radarr list</a>
-        <a class="btn btn-primary" href="#/lists/new?target=sonarr">${icon('plus')}Sonarr list</a>
+        <a class="btn btn-primary" href="#/lists/new">${icon('plus')}New list</a>
       </div>
     </div>`;
 
@@ -268,14 +330,9 @@ async function viewLists() {
     view.innerHTML = `${head}
       <div class="empty">
         <h2>No lists yet</h2>
-        <p>Each list is a saved AniList search. Courarr turns the results into a feed URL that Sonarr or Radarr imports.<br>Start from a template or build your own.</p>
-        <div class="templates">
-          ${TEMPLATES.map(
-            (t, i) => `<div class="template" data-template="${i}" role="button" tabindex="0">
-              <span class="pill ${t.target}" style="align-self:flex-start">${t.target}</span>
-              <b>${esc(t.name)}</b><span>${esc(t.desc)}</span></div>`,
-          ).join('')}
-        </div>
+        <p>Each list is a saved search — anime from AniList, or regular TV & movies from TMDB.<br>
+        Courarr turns the results into a feed that Sonarr or Radarr imports. Start from a template or build your own.</p>
+        ${templatesHtml()}
       </div>`;
   } else {
     view.innerHTML = `${head}<div class="cards">${lists.map(listCard).join('')}</div>`;
@@ -312,11 +369,12 @@ function listCard(l) {
     <article class="card${l.enabled ? '' : ' disabled'}">
       <div class="card-top">
         <div class="card-title">
+          <span class="pill ${l.source === 'anilist' ? 'anime' : 'normal'}">${SOURCE_NAMES[l.source]}</span>
           <span class="pill ${l.target}">${l.target}</span>
-          <a href="#/lists/${l.id}">${esc(l.name)}</a>
           ${l.enabled ? '' : '<span class="pill off">Paused</span>'}
         </div>
-        <div class="card-meta">${esc(describe(l.filters, l.seasonLabel))}</div>
+        <a class="card-name" href="#/lists/${l.id}">${esc(l.name)}</a>
+        <div class="card-meta">${esc(describe(l))}</div>
       </div>
       ${l.last_error ? `<div class="card-error">Last refresh failed: ${esc(l.last_error)}</div>` : ''}
       <div class="stats">
@@ -330,7 +388,9 @@ function listCard(l) {
         <button class="btn btn-ghost btn-sm btn-icon" data-copy="${esc(url)}" title="Copy feed URL" type="button">${icon('copy')}</button>
       </div>
       <div class="card-foot">
-        <span class="when">${l.last_refresh ? `Refreshed ${ago(l.last_refresh)}` : 'Not refreshed yet'}</span>
+        <span class="when">${l.last_refresh ? `Refreshed ${ago(l.last_refresh)}` : 'Not refreshed yet'}${
+          l.arr_list_id ? ` · <span class="linked">${icon('link')}In ${ARR[l.target]}</span>` : ''
+        }</span>
         <button class="btn btn-sm" data-refresh="${l.id}" type="button">${icon('refresh')}Refresh</button>
         <a class="btn btn-sm btn-ghost" href="#/lists/${l.id}">${icon('edit')}Edit</a>
       </div>
@@ -348,15 +408,24 @@ async function viewEditor(id, params, token) {
 
   let draft;
   if (saved) {
-    draft = { name: saved.name, slug: saved.slug, target: saved.target, filters: structuredClone(saved.filters), enabled: saved.enabled };
+    draft = {
+      name: saved.name,
+      slug: saved.slug,
+      source: saved.source,
+      target: saved.target,
+      filters: structuredClone(saved.filters),
+      enabled: saved.enabled,
+    };
   } else {
     const tpl = TEMPLATES[Number(params.get('template'))];
+    const source = tpl?.source || (params.get('source') === 'tmdb' ? 'tmdb' : 'anilist');
     const target = tpl?.target || (params.get('target') === 'radarr' ? 'radarr' : 'sonarr');
     draft = {
       name: tpl?.name || '',
       slug: '',
+      source,
       target,
-      filters: { ...structuredClone(meta.defaults[target]), ...structuredClone(tpl?.filters || {}) },
+      filters: { ...structuredClone(meta.defaults[source][target]), ...structuredClone(tpl?.filters || {}) },
       enabled: true,
     };
   }
@@ -366,12 +435,15 @@ async function viewEditor(id, params, token) {
     saved,
     draft,
     meta,
+    tmeta: null,
+    tmetaError: null,
+    kwResults: [],
     items: saved?.items?.length ? saved.items : null,
-    seasonLabel: saved?.seasonLabel || null,
+    label: saved?.label || null,
     mode: saved?.items?.length ? 'saved' : 'none',
     warnings: [],
     tab: 'all',
-    busy: false,
+    arr: null,
   };
 
   view.innerHTML = `
@@ -380,24 +452,55 @@ async function viewEditor(id, params, token) {
         <a class="btn btn-ghost btn-sm" href="#/" style="margin-left:-10px;margin-bottom:6px">${icon('back')}Lists</a>
         <h1>${saved ? esc(saved.name) : 'New list'}</h1>
       </div>
+      ${
+        saved
+          ? ''
+          : `<select class="select" id="tpl-pick" style="width:auto;min-width:230px">
+              <option value="">Start from a template…</option>
+              ${TEMPLATES.map((t, i) => `<option value="${i}">${esc(SOURCE_NAMES[t.source])} · ${esc(t.name)}</option>`).join('')}
+            </select>`
+      }
     </div>
+    ${saved ? '<div id="arr-bar" class="arr-bar"></div>' : ''}
     <div class="editor">
       <form class="form" id="ed-form" autocomplete="off"></form>
       <section id="ed-results"></section>
     </div>
-    <datalist id="tag-list">${meta.tags.map((t) => `<option value="${esc(t.name)}">${esc(t.category)}</option>`).join('')}</datalist>`;
+    <datalist id="tag-list">${meta.tags.map((t) => `<option value="${esc(t.name)}">${esc(t.category)}</option>`).join('')}</datalist>
+    <datalist id="kw-list"></datalist>`;
 
   const form = document.getElementById('ed-form');
   const results = document.getElementById('ed-results');
+  const arrBar = document.getElementById('arr-bar');
+
+  view.querySelector('#tpl-pick')?.addEventListener('change', (e) => {
+    if (e.target.value !== '') location.hash = `#/lists/new?template=${e.target.value}`;
+  });
 
   const renderForm = () => {
-    form.innerHTML = editorFormHtml(ed);
+    form.innerHTML = ed.draft.source === 'tmdb' ? tmdbFormHtml(ed) : animeFormHtml(ed);
   };
   const renderRes = () => {
     results.innerHTML = resultsHtml(ed);
   };
+
+  async function loadTmeta() {
+    if (ed.draft.source !== 'tmdb') return;
+    const region = ed.draft.filters.region || state.settings.tmdbRegion || 'US';
+    ed.tmetaError = null;
+    try {
+      ed.tmeta = await loadTmdbMeta(tmdbKind(ed.draft.target), region);
+    } catch (e) {
+      ed.tmeta = null;
+      ed.tmetaError = e.message;
+    }
+  }
+
+  await loadTmeta();
+  if (token !== renderToken) return;
   renderForm();
   renderRes();
+  if (saved) renderArrBar();
 
   // --- form events ---
 
@@ -408,75 +511,95 @@ async function viewEditor(id, params, token) {
     o[keys[0]] = value;
   };
 
-  form.addEventListener('input', (e) => {
-    const f = e.target.dataset.f;
+  form.addEventListener('input', async (e) => {
+    const t = e.target;
+    if (t.id === 'kw-input') return searchKw(t.value);
+    const f = t.dataset.f;
     if (!f) return;
-    let v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-    if (e.target.type === 'number') v = e.target.value === '' ? 0 : Number(e.target.value);
+    let v = t.type === 'checkbox' ? t.checked : t.value;
+    if (t.type === 'number') v = t.value === '' ? 0 : Number(t.value);
     setPath(f, v);
+    const fl = ed.draft.filters;
     if (f === 'filters.season.mode') {
-      const s = ed.draft.filters.season;
-      if (v === 'specific' && !s.season) {
-        s.season = 'WINTER';
-        s.year = new Date().getFullYear();
+      if (v === 'specific' && !fl.season.season) {
+        fl.season.season = 'WINTER';
+        fl.season.year = new Date().getFullYear();
       }
-      if (v === 'year' && !s.year) s.year = new Date().getFullYear();
+      if (v === 'year' && !fl.season.year) fl.season.year = new Date().getFullYear();
+      renderForm();
+    }
+    if (f === 'filters.date.mode') {
+      if (v === 'year' && !fl.date.year) fl.date.year = new Date().getFullYear();
+      if ((v === 'lastDays' || v === 'nextDays') && !fl.date.days) fl.date.days = 30;
+      renderForm();
+    }
+    if (f === 'filters.region') {
+      fl.providers = [];
+      await loadTmeta();
       renderForm();
     }
   });
 
-  form.addEventListener('click', (e) => {
-    const b = e.target.closest('button,[data-chip],[data-genre]');
+  form.addEventListener('click', async (e) => {
+    const b = e.target.closest('button,[data-chip],[data-tri]');
     if (!b) return;
     const f = ed.draft.filters;
-    if (b.dataset.target && b.dataset.target !== ed.draft.target) {
-      ed.draft.target = b.dataset.target;
-      const d = structuredClone(meta.defaults[b.dataset.target]);
-      f.formats = d.formats;
-      f.season = d.season;
+    if ((b.dataset.target && b.dataset.target !== ed.draft.target) || (b.dataset.source && b.dataset.source !== ed.draft.source)) {
+      if (b.dataset.target) ed.draft.target = b.dataset.target;
+      if (b.dataset.source) ed.draft.source = b.dataset.source;
+      ed.draft.filters = structuredClone(meta.defaults[ed.draft.source][ed.draft.target]);
       ed.items = null;
       ed.mode = 'none';
+      await loadTmeta();
       renderForm();
       renderRes();
       return;
     }
     if (b.dataset.chip) {
       const arr = f[b.dataset.chip];
-      const v = b.dataset.v;
+      const v = b.dataset.num ? Number(b.dataset.v) : b.dataset.v;
       const i = arr.indexOf(v);
       if (i >= 0) arr.splice(i, 1);
       else arr.push(v);
       b.classList.toggle('on', i < 0);
       return;
     }
-    if (b.dataset.genre) {
-      const g = b.dataset.genre;
-      const inc = f.genresInclude.indexOf(g);
-      const exc = f.genresExclude.indexOf(g);
+    if (b.dataset.tri) {
+      // tri-state: off → required → excluded → off
+      const v = b.dataset.num ? Number(b.dataset.v) : b.dataset.v;
+      const inc = f.genresInclude.indexOf(v);
+      const exc = f.genresExclude.indexOf(v);
       if (inc >= 0) {
         f.genresInclude.splice(inc, 1);
-        f.genresExclude.push(g);
+        f.genresExclude.push(v);
       } else if (exc >= 0) {
         f.genresExclude.splice(exc, 1);
       } else {
-        f.genresInclude.push(g);
+        f.genresInclude.push(v);
       }
-      b.classList.toggle('on', f.genresInclude.includes(g));
-      b.classList.toggle('not', f.genresExclude.includes(g));
+      b.classList.toggle('on', f.genresInclude.includes(v));
+      b.classList.toggle('not', f.genresExclude.includes(v));
       return;
     }
-    if (b.dataset.sequels) {
-      f.sequels = b.dataset.sequels;
-      form.querySelectorAll('[data-sequels]').forEach((x) => x.classList.toggle('on', x === b));
+    if (b.dataset.seg) {
+      setPath(b.dataset.seg, b.dataset.v);
+      if (b.dataset.rerender) renderForm();
+      else b.parentElement.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
       return;
     }
-    if (b.dataset.tagAdd) {
-      addTag(b.dataset.tagAdd);
+    if (b.dataset.tagAdd) return addTag(b.dataset.tagAdd);
+    if (b.dataset.kwAdd) return addKeyword(b.dataset.kwAdd);
+    if (b.dataset.remove) {
+      const key = b.dataset.remove;
+      f[key] = f[key].filter((t) => String(t.id ?? t) !== b.dataset.v);
+      renderForm();
       return;
     }
-    if (b.dataset.tagRemove) {
-      const key = b.dataset.tagRemove;
-      f[key] = f[key].filter((t) => t !== b.dataset.v);
+    if (b.id === 'net-add') {
+      const input = form.querySelector('#net-input');
+      const n = Number(input.value);
+      if (!Number.isInteger(n) || n <= 0) return toast('Network IDs are whole numbers (from the TMDB network page URL)', true);
+      if (!f.networks.includes(n)) f.networks.push(n);
       renderForm();
       return;
     }
@@ -485,9 +608,18 @@ async function viewEditor(id, params, token) {
   });
 
   form.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.id === 'tag-input') {
+    if (e.key !== 'Enter') return;
+    if (e.target.id === 'tag-input') {
       e.preventDefault();
       addTag('tagsInclude');
+    }
+    if (e.target.id === 'kw-input') {
+      e.preventDefault();
+      addKeyword('keywordsInclude');
+    }
+    if (e.target.id === 'net-input') {
+      e.preventDefault();
+      form.querySelector('#net-add').click();
     }
   });
 
@@ -501,10 +633,7 @@ async function viewEditor(id, params, token) {
     const val = input.value.trim();
     if (!val) return;
     const known = meta.tags.find((t) => t.name.toLowerCase() === val.toLowerCase());
-    if (meta.tags.length && !known) {
-      toast(`"${val}" isn't an AniList tag`, true);
-      return;
-    }
+    if (meta.tags.length && !known) return toast(`"${val}" isn't an AniList tag`, true);
     const name = known?.name || val;
     const f = ed.draft.filters;
     f.tagsInclude = f.tagsInclude.filter((t) => t !== name);
@@ -514,21 +643,52 @@ async function viewEditor(id, params, token) {
     form.querySelector('#tag-input')?.focus();
   }
 
+  const searchKw = debounce(async (q) => {
+    if (q.trim().length < 2) return;
+    try {
+      ed.kwResults = await api(`/api/tmdb/keywords?q=${encodeURIComponent(q.trim())}`);
+      document.getElementById('kw-list').innerHTML = ed.kwResults.map((k) => `<option value="${esc(k.name)}"></option>`).join('');
+    } catch {
+      /* keyword search is best-effort */
+    }
+  }, 250);
+
+  async function addKeyword(key) {
+    const input = form.querySelector('#kw-input');
+    const val = input.value.trim().toLowerCase();
+    if (!val) return;
+    let kw = ed.kwResults.find((k) => k.name.toLowerCase() === val);
+    if (!kw) {
+      try {
+        ed.kwResults = await api(`/api/tmdb/keywords?q=${encodeURIComponent(val)}`);
+        kw = ed.kwResults.find((k) => k.name.toLowerCase() === val) || ed.kwResults[0];
+      } catch (err) {
+        return toast(err.message, true);
+      }
+    }
+    if (!kw) return toast(`No TMDB keyword matches "${input.value.trim()}"`, true);
+    const f = ed.draft.filters;
+    f.keywordsInclude = f.keywordsInclude.filter((k) => k.id !== kw.id);
+    f.keywordsExclude = f.keywordsExclude.filter((k) => k.id !== kw.id);
+    f[key].push(kw);
+    renderForm();
+    form.querySelector('#kw-input')?.focus();
+  }
+
   const setBusy = (busy, label) => {
-    ed.busy = busy;
     form.querySelectorAll('.form-foot button').forEach((b) => (b.disabled = busy));
     if (busy) results.innerHTML = loadingBlock(label);
   };
 
   async function runPreview() {
-    setBusy(true, 'Searching AniList and matching IDs…');
+    setBusy(true, ed.draft.source === 'tmdb' ? 'Searching TMDB…' : 'Searching AniList and matching IDs…');
     try {
       const r = await api('/api/preview', {
         method: 'POST',
-        body: { target: ed.draft.target, filters: ed.draft.filters, listId: ed.id },
+        body: { source: ed.draft.source, target: ed.draft.target, filters: ed.draft.filters, listId: ed.id },
       });
       if (token !== renderToken) return;
-      Object.assign(ed, { items: r.items, seasonLabel: r.seasonLabel, warnings: r.warnings, mode: 'preview' });
+      Object.assign(ed, { items: r.items, label: r.label, warnings: r.warnings, mode: 'preview' });
     } catch (e) {
       toast(e.message, true);
     }
@@ -551,10 +711,11 @@ async function viewEditor(id, params, token) {
       const r = await api(`/api/lists/${list.id}/refresh`, { method: 'POST' });
       const l = r.summary.lists[0];
       if (l?.error) toast(`Saved, but the refresh failed: ${l.error}`, true);
-      else toast(`Saved — ${l.matched}/${l.total} titles matched`);
-      if (ed.id) route();
-      else location.hash = `#/lists/${list.id}`;
+      else toast(`Saved — ${l.matched}/${l.total} titles in the feed`);
       pollStatus();
+      if (ed.id) route();
+      // New list: offer to add it to Sonarr/Radarr straight away.
+      else location.hash = `#/lists/${list.id}${arrConnected(list.target) ? '?connect=1' : ''}`;
     } catch (e) {
       toast(e.message, true);
       setBusy(false);
@@ -563,7 +724,8 @@ async function viewEditor(id, params, token) {
   }
 
   async function deleteList() {
-    if (!confirm(`Delete "${ed.saved.name}"? Its feed URL will stop working.`)) return;
+    const linked = ed.saved.arr_list_id ? ` The “Courarr – ${ed.saved.name}” import list in ${ARR[ed.saved.target]} is removed too.` : '';
+    if (!confirm(`Delete "${ed.saved.name}"? Its feed URL will stop working.${linked}`)) return;
     try {
       await api(`/api/lists/${ed.id}`, { method: 'DELETE' });
       toast('List deleted');
@@ -572,6 +734,60 @@ async function viewEditor(id, params, token) {
       toast(e.message, true);
     }
   }
+
+  // --- Sonarr / Radarr link ---
+
+  async function renderArrBar() {
+    const target = ed.saved.target;
+    const name = ARR[target];
+    try {
+      ed.arr = await api(`/api/lists/${ed.id}/arr`);
+    } catch (e) {
+      arrBar.innerHTML = `<span class="muted">Couldn’t check ${name}: ${esc(e.message)}</span>`;
+      return;
+    }
+    const a = ed.arr;
+    const il = a.importList;
+    if (!a.connected) {
+      arrBar.innerHTML = `
+        <span class="pill ${target}">${target}</span>
+        <span class="muted">Add this feed in ${name} → Settings → Import Lists → ${target === 'sonarr' ? 'Custom List' : 'Custom Lists'}${
+          target === 'sonarr' ? ` with <b>Series Type: ${SERIES_TYPES[a.recommendedSeriesType]}</b>` : ''
+        }, or <a href="#/settings">connect ${name}</a> to do it from here.</span>
+        <span class="spacer"></span>
+        <button class="btn btn-sm" type="button" data-copy="${esc(a.feedUrl)}">${icon('copy')}Copy feed URL</button>`;
+    } else if (il) {
+      const bits = [il.rootFolderPath];
+      if (target === 'sonarr') bits.unshift(`Series type: <b>${SERIES_TYPES[il.seriesType] || il.seriesType}</b>`);
+      arrBar.innerHTML = `
+        <span class="pill ${target}">${target}</span>
+        <span>${icon('link')} Added as <b>${esc(il.name)}</b> · ${bits.map((x) => (x.startsWith('Series') ? x : esc(x))).join(' · ')}</span>
+        ${
+          target === 'sonarr' && il.seriesType !== a.recommendedSeriesType
+            ? `<span class="warn-text">${SOURCE_NAMES[ed.saved.source]} lists usually use ${SERIES_TYPES[a.recommendedSeriesType]}</span>`
+            : ''
+        }
+        <span class="spacer"></span>
+        <button class="btn btn-sm" type="button" data-arr="edit">${icon('edit')}Edit</button>`;
+    } else {
+      arrBar.innerHTML = `
+        <span class="pill ${target}">${target}</span>
+        <span class="muted">Not added to ${name} yet.</span>
+        <span class="spacer"></span>
+        <button class="btn btn-sm btn-primary" type="button" data-arr="edit">${icon('plus')}Add to ${name}</button>`;
+    }
+  }
+
+  arrBar?.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-arr],[data-copy]');
+    if (!b) return;
+    if (b.dataset.copy) return copyText(b.dataset.copy);
+    if (await arrDialog(ed.saved, ed.arr)) {
+      const fresh = await api(`/api/lists/${ed.id}`);
+      ed.saved = fresh;
+      renderArrBar();
+    }
+  });
 
   // --- results events ---
 
@@ -584,12 +800,12 @@ async function viewEditor(id, params, token) {
       renderRes();
       return;
     }
-    const item = ed.items?.find((i) => i.anilistId === Number(b.dataset.exclude || b.dataset.override));
+    const item = ed.items?.find((i) => i.key === Number(b.dataset.exclude || b.dataset.override));
     if (!item) return;
     if (b.dataset.exclude) {
       try {
-        if (item.excluded) await api(`/api/lists/${ed.id}/exclusions/${item.anilistId}`, { method: 'DELETE' });
-        else await api(`/api/lists/${ed.id}/exclusions`, { method: 'POST', body: { anilistId: item.anilistId, title: item.title } });
+        if (item.excluded) await api(`/api/lists/${ed.id}/exclusions/${item.key}`, { method: 'DELETE' });
+        else await api(`/api/lists/${ed.id}/exclusions`, { method: 'POST', body: { key: item.key, title: item.title } });
         item.excluded = !item.excluded;
         toast(item.excluded ? `Excluded ${item.title} from the feed` : `${item.title} is back in the feed`);
         renderRes();
@@ -612,22 +828,27 @@ async function viewEditor(id, params, token) {
   });
 
   if (!saved) runPreview();
+  if (saved && params?.get('connect') === '1' && arrConnected(saved.target)) {
+    history.replaceState(null, '', `#/lists/${saved.id}`);
+    setTimeout(() => arrBar.querySelector('[data-arr]')?.click(), 400);
+  }
 }
 
-function editorFormHtml(ed) {
-  const d = ed.draft;
-  const f = d.filters;
-  const s = f.season;
-  const chip = (key, v, label) =>
-    `<button type="button" class="chip${f[key].includes(v) ? ' on' : ''}" data-chip="${key}" data-v="${esc(v)}">${esc(label)}</button>`;
-  const year = new Date().getFullYear();
-  const formats = d.target === 'radarr' ? ['MOVIE', 'SPECIAL', 'OVA', 'ONA'] : ['TV', 'TV_SHORT', 'ONA', 'OVA', 'SPECIAL', 'MOVIE'];
+// --- form pieces shared by both list types ---
 
+function typeSection(d) {
   return `
     <div class="form-sec">
       <div class="field">
         <label for="ed-name">Name</label>
-        <input class="input" id="ed-name" data-f="name" value="${esc(d.name)}" placeholder="e.g. Fall simulcasts" maxlength="80" />
+        <input class="input" id="ed-name" data-f="name" value="${esc(d.name)}" placeholder="${d.source === 'tmdb' ? 'e.g. New Netflix series' : 'e.g. Fall simulcasts'}" maxlength="80" />
+      </div>
+      <div class="field">
+        <span class="label">List type</span>
+        <div class="seg">
+          <button type="button" class="anime${d.source === 'anilist' ? ' on' : ''}" data-source="anilist">Anime · AniList</button>
+          <button type="button" class="normal${d.source === 'tmdb' ? ' on' : ''}" data-source="tmdb">TV & movies · TMDB</button>
+        </div>
       </div>
       <div class="field">
         <span class="label">Send to</span>
@@ -635,9 +856,72 @@ function editorFormHtml(ed) {
           <button type="button" class="sonarr${d.target === 'sonarr' ? ' on' : ''}" data-target="sonarr">Sonarr · series</button>
           <button type="button" class="radarr${d.target === 'radarr' ? ' on' : ''}" data-target="radarr">Radarr · movies</button>
         </div>
+        ${
+          d.target === 'sonarr'
+            ? `<span class="hint">Added to Sonarr as <b>${d.source === 'tmdb' ? 'Standard' : 'Anime'}</b> series.${
+                d.source === 'tmdb' ? ' Anime is left out so it can’t land with the wrong type.' : ''
+              }</span>`
+            : ''
+        }
       </div>
-    </div>
+    </div>`;
+}
 
+function advancedSection(d) {
+  return `
+    <div class="form-sec">
+      <details class="adv">
+        <summary>Advanced</summary>
+        <div>
+          <div class="field">
+            <label for="ed-slug">Feed name</label>
+            <input class="input mono" id="ed-slug" data-f="slug" value="${esc(d.slug)}" placeholder="generated from the name" />
+            <span class="hint">Part of the feed URL: /feed/<b>${esc(d.slug || 'name')}</b></span>
+          </div>
+          <label class="check">
+            <input type="checkbox" data-f="enabled"${d.enabled ? ' checked' : ''} />
+            <span><b>Include in scheduled refreshes</b><span class="hint">When off, the feed keeps its last results.</span></span>
+          </label>
+        </div>
+      </details>
+    </div>`;
+}
+
+function footSection(ed) {
+  return `
+    <div class="form-foot">
+      <button type="button" class="btn" id="ed-preview">${icon('play')}Preview</button>
+      <span class="spacer"></span>
+      ${ed.saved ? '<button type="button" class="btn btn-ghost btn-danger" id="ed-delete">Delete</button>' : ''}
+      <button type="submit" class="btn btn-primary">${ed.saved ? 'Save & refresh' : 'Create list'}</button>
+    </div>`;
+}
+
+const chipHtml = (arr, key, v, label, num = false) =>
+  `<button type="button" class="chip${arr.includes(v) ? ' on' : ''}" data-chip="${key}" data-v="${esc(v)}"${num ? ' data-num="1"' : ''}>${esc(label)}</button>`;
+
+const triHtml = (f, v, label, num = false) =>
+  `<button type="button" class="chip${f.genresInclude.includes(v) ? ' on' : ''}${f.genresExclude.includes(v) ? ' not' : ''}" data-tri="1" data-v="${esc(v)}"${num ? ' data-num="1"' : ''}>${esc(label)}</button>`;
+
+const segHtml = (path, current, options, rerender = false) =>
+  `<div class="seg">${options
+    .map(([v, l]) => `<button type="button" data-seg="${path}" data-v="${v}"${rerender ? ' data-rerender="1"' : ''} class="${current === v ? 'on' : ''}">${l}</button>`)
+    .join('')}</div>`;
+
+const removableChips = (list, key, cls) =>
+  list.map((t) => `<button type="button" class="chip ${cls}" data-remove="${key}" data-v="${esc(t.id ?? t)}">${esc(t.name ?? t)} <span class="x">×</span></button>`).join('');
+
+// --- anime form ---
+
+function animeFormHtml(ed) {
+  const d = ed.draft;
+  const f = d.filters;
+  const s = f.season;
+  const year = new Date().getFullYear();
+  const formats = d.target === 'radarr' ? ['MOVIE', 'SPECIAL', 'OVA', 'ONA'] : ['TV', 'TV_SHORT', 'ONA', 'OVA', 'SPECIAL', 'MOVIE'];
+
+  return `
+    ${typeSection(d)}
     <div class="form-sec">
       <div class="field">
         <label for="ed-season">When</label>
@@ -663,23 +947,19 @@ function editorFormHtml(ed) {
       </div>
       <div class="field">
         <span class="label">Format</span>
-        <div class="chips">${formats.map((x) => chip('formats', x, FORMAT_NAMES[x])).join('')}</div>
+        <div class="chips">${formats.map((x) => chipHtml(f.formats, 'formats', x, FORMAT_NAMES[x])).join('')}</div>
       </div>
       <div class="field">
-        <span class="label">Status <span class="faint" style="text-transform:none;letter-spacing:0;font-weight:400">— none selected = any</span></span>
-        <div class="chips">${Object.entries(STATUS_NAMES).map(([k, v]) => chip('statuses', k, v)).join('')}</div>
+        <span class="label">Status <span class="label-note">— none selected = any</span></span>
+        <div class="chips">${Object.entries(STATUS_NAMES).map(([k, v]) => chipHtml(f.statuses, 'statuses', k, v)).join('')}</div>
       </div>
       <div class="field">
         <span class="label">Sequels</span>
-        <div class="seg">
-          ${[['include', 'Include'], ['exclude', 'New only'], ['only', 'Sequels only']]
-            .map(([k, v]) => `<button type="button" data-sequels="${k}" class="${f.sequels === k ? 'on' : ''}">${v}</button>`)
-            .join('')}
-        </div>
+        ${segHtml('filters.sequels', f.sequels, [['include', 'Include'], ['exclude', 'New only'], ['only', 'Sequels only']])}
       </div>
       <div class="field">
         <span class="label">Country of origin</span>
-        <div class="chips">${Object.entries(COUNTRIES).map(([k, v]) => chip('countries', k, v)).join('')}</div>
+        <div class="chips">${Object.entries(ANIME_COUNTRIES).map(([k, v]) => chipHtml(f.countries, 'countries', k, v)).join('')}</div>
       </div>
     </div>
 
@@ -687,25 +967,18 @@ function editorFormHtml(ed) {
       <div class="field">
         <span class="label">Genres</span>
         <span class="hint">Click once to require, twice to exclude.</span>
-        <div class="chips">
-          ${ed.meta.genres
-            .map((g) => `<button type="button" class="chip${f.genresInclude.includes(g) ? ' on' : ''}${f.genresExclude.includes(g) ? ' not' : ''}" data-genre="${esc(g)}">${esc(g)}</button>`)
-            .join('')}
-        </div>
+        <div class="chips">${ed.meta.genres.map((g) => triHtml(f, g, g)).join('')}</div>
       </div>
       <div class="field">
         <label for="tag-input">Tags</label>
         <div class="tag-add">
           <input class="input" id="tag-input" list="tag-list" placeholder="Isekai, Iyashikei, Time Skip…" />
-          <button type="button" class="btn btn-sm" data-tag-add="tagsInclude" style="height:36px">Require</button>
-          <button type="button" class="btn btn-sm" data-tag-add="tagsExclude" style="height:36px">Exclude</button>
+          <button type="button" class="btn btn-sm" data-tag-add="tagsInclude">Require</button>
+          <button type="button" class="btn btn-sm" data-tag-add="tagsExclude">Exclude</button>
         </div>
         ${
           f.tagsInclude.length + f.tagsExclude.length
-            ? `<div class="chips">
-                ${f.tagsInclude.map((t) => `<button type="button" class="chip on" data-tag-remove="tagsInclude" data-v="${esc(t)}">${esc(t)} <span class="x">×</span></button>`).join('')}
-                ${f.tagsExclude.map((t) => `<button type="button" class="chip not" data-tag-remove="tagsExclude" data-v="${esc(t)}">${esc(t)} <span class="x">×</span></button>`).join('')}
-              </div>`
+            ? `<div class="chips">${removableChips(f.tagsInclude, 'tagsInclude', 'on')}${removableChips(f.tagsExclude, 'tagsExclude', 'not')}</div>`
             : ''
         }
       </div>
@@ -726,7 +999,7 @@ function editorFormHtml(ed) {
         <div class="field">
           <label for="ed-sort">Rank by</label>
           <select class="select" id="ed-sort" data-f="filters.sort">
-            ${Object.entries(SORT_NAMES).map(([k, v]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${v}</option>`).join('')}
+            ${Object.entries(ANIME_SORTS).map(([k, v]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${v}</option>`).join('')}
           </select>
         </div>
         <div class="field">
@@ -736,39 +1009,187 @@ function editorFormHtml(ed) {
       </div>
       <span class="hint">Popularity = AniList members who added the show. Score is 0–100; new shows often have none yet, so a minimum score hides them.</span>
     </div>
+    ${advancedSection(d)}
+    ${footSection(ed)}`;
+}
 
+// --- TV & movies (TMDB) form ---
+
+function tmdbFormHtml(ed) {
+  const d = ed.draft;
+  const f = d.filters;
+  const tv = d.target === 'sonarr';
+  const year = new Date().getFullYear();
+  const m = ed.tmeta;
+  const trending = f.collection === 'trending';
+  const region = f.region || state.settings?.tmdbRegion || 'US';
+  const dateModes = Object.entries(DATE_MODES).filter(([k]) => tv || k !== 'airing');
+
+  if (!m) {
+    return `${typeSection(d)}
+      <div class="form-sec">
+        <div class="notice">${
+          state.settings?.tmdbApiKeySet
+            ? `Couldn’t load TMDB data: ${esc(ed.tmetaError || 'unknown error')}`
+            : 'TV & movie lists use TMDB. Add a free TMDB API key in <a href="#/settings">Settings</a> first.'
+        }</div>
+      </div>
+      ${advancedSection(d)}${footSection(ed)}`;
+  }
+
+  return `
+    ${typeSection(d)}
     <div class="form-sec">
-      <details class="adv">
-        <summary>Advanced</summary>
-        <div>
-          <div class="field">
-            <label for="ed-slug">Feed name</label>
-            <input class="input mono" id="ed-slug" data-f="slug" value="${esc(d.slug)}" placeholder="generated from the name" />
-            <span class="hint">Part of the feed URL: /feed/<b>${esc(d.slug || 'name')}</b></span>
-          </div>
-          <label class="check">
-            <input type="checkbox" data-f="enabled"${d.enabled ? ' checked' : ''} />
-            <span><b>Include in scheduled refreshes</b><span class="hint">When off, the feed keeps its last results.</span></span>
-          </label>
-        </div>
-      </details>
+      <div class="field">
+        <span class="label">Source</span>
+        ${segHtml('filters.collection', f.collection, [['discover', 'Discover (all filters)'], ['trending', 'Trending this week']], true)}
+        ${trending ? '<span class="hint">Trending uses genre, language, country, rating and date filters. Streaming, networks and keywords only apply to Discover.</span>' : ''}
+      </div>
+      <div class="field">
+        <label for="ed-date">${tv ? 'Premiered / airing' : 'Released'}</label>
+        <select class="select" id="ed-date" data-f="filters.date.mode">
+          ${dateModes.map(([k, v]) => `<option value="${k}"${f.date.mode === k ? ' selected' : ''}>${v}</option>`).join('')}
+        </select>
+        ${f.date.mode === 'year' ? `<input class="input" type="number" min="1900" max="${year + 3}" data-f="filters.date.year" value="${esc(f.date.year)}" />` : ''}
+        ${
+          f.date.mode === 'lastDays' || f.date.mode === 'nextDays'
+            ? `<div class="row"><input class="input" type="number" min="1" max="3650" data-f="filters.date.days" value="${esc(f.date.days)}" /><span class="muted" style="flex:none">days</span></div>`
+            : ''
+        }
+        ${['lastDays', 'nextDays', 'thisYear', 'airing'].includes(f.date.mode) ? '<span class="hint">Moves with the calendar on every refresh.</span>' : ''}
+      </div>
+      ${
+        !tv
+          ? `<div class="field">
+              <span class="label">Release type</span>
+              ${segHtml('filters.releaseType', f.releaseType, [['any', 'Any'], ['theatrical', 'Cinemas'], ['digital', 'Digital / disc']])}
+              <span class="hint">“Digital / disc” dates by the streaming, rental or Blu-ray release${trending ? '' : ` in ${esc(region)}`} — good for Radarr, since that’s when a release exists to grab.</span>
+            </div>`
+          : ''
+      }
+      ${
+        tv
+          ? `<div class="field">
+              <span class="label">Show type <span class="label-note">— none = any</span></span>
+              <div class="chips">${m.tvTypes.map((t) => chipHtml(f.tvTypes, 'tvTypes', t.id, t.name, true)).join('')}</div>
+            </div>
+            <div class="field">
+              <span class="label">Status <span class="label-note">— none = any</span></span>
+              <div class="chips">${m.tvStatuses.map((t) => chipHtml(f.tvStatuses, 'tvStatuses', t.id, t.name, true)).join('')}</div>
+            </div>`
+          : ''
+      }
     </div>
 
-    <div class="form-foot">
-      <button type="button" class="btn" id="ed-preview">${icon('play')}Preview</button>
-      <span class="spacer"></span>
-      ${ed.saved ? '<button type="button" class="btn btn-ghost btn-danger" id="ed-delete">Delete</button>' : ''}
-      <button type="submit" class="btn btn-primary">${ed.saved ? 'Save & refresh' : 'Create list'}</button>
-    </div>`;
+    <div class="form-sec">
+      <div class="field">
+        <span class="label">Genres</span>
+        <span class="hint">Click once to require, twice to exclude.</span>
+        <div class="chips">${m.genres.map((g) => triHtml(f, g.id, g.name, true)).join('')}</div>
+      </div>
+      <label class="check">
+        <input type="checkbox" data-f="filters.excludeAnime"${f.excludeAnime ? ' checked' : ''} />
+        <span><b>Leave out anime</b><span class="hint">Keeps anime out of this list${tv ? ' so it isn’t added as a Standard series' : ''}. Use an Anime list for those.</span></span>
+      </label>
+    </div>
+
+    <div class="form-sec">
+      <div class="field">
+        <span class="label">Original language <span class="label-note">— none = any</span></span>
+        <div class="chips">${m.languages.map((l) => chipHtml(f.languages, 'languages', l.code, l.name)).join('')}</div>
+      </div>
+      <div class="field">
+        <span class="label">Country of origin <span class="label-note">— none = any</span></span>
+        <div class="chips">${m.countries.map((c) => chipHtml(f.countries, 'countries', c.code, c.name)).join('')}</div>
+      </div>
+    </div>
+
+    ${
+      trending
+        ? ''
+        : `<div class="form-sec">
+            <div class="field">
+              <div class="row" style="align-items:flex-end">
+                <span class="label" style="flex:1">Streaming on <span class="label-note">— subscription / free</span></span>
+                <select class="select" data-f="filters.region" title="Streaming region" style="flex:none;width:90px;height:30px">
+                  ${REGIONS.map((r) => `<option value="${r}"${region === r ? ' selected' : ''}>${r}</option>`).join('')}
+                </select>
+              </div>
+              <div class="chips">${m.providers.map((p) => chipHtml(f.providers, 'providers', p.id, p.name, true)).join('')}</div>
+            </div>
+            ${
+              tv
+                ? `<div class="field">
+                    <span class="label">Network <span class="label-note">— original broadcaster</span></span>
+                    <div class="chips">
+                      ${m.networks.map((n) => chipHtml(f.networks, 'networks', n.id, n.name, true)).join('')}
+                      ${f.networks
+                        .filter((id) => !m.networks.some((n) => n.id === id))
+                        .map((id) => `<button type="button" class="chip on" data-remove="networks" data-v="${id}">Network ${id} <span class="x">×</span></button>`)
+                        .join('')}
+                    </div>
+                    <div class="tag-add">
+                      <input class="input" id="net-input" inputmode="numeric" placeholder="Other network ID (from themoviedb.org/network/…)" />
+                      <button type="button" class="btn btn-sm" id="net-add">Add</button>
+                    </div>
+                  </div>`
+                : ''
+            }
+            <div class="field">
+              <label for="kw-input">Keywords</label>
+              <div class="tag-add">
+                <input class="input" id="kw-input" list="kw-list" placeholder="time travel, heist, based on novel…" />
+                <button type="button" class="btn btn-sm" data-kw-add="keywordsInclude">Require</button>
+                <button type="button" class="btn btn-sm" data-kw-add="keywordsExclude">Exclude</button>
+              </div>
+              ${
+                f.keywordsInclude.length + f.keywordsExclude.length
+                  ? `<div class="chips">${removableChips(f.keywordsInclude, 'keywordsInclude', 'on')}${removableChips(f.keywordsExclude, 'keywordsExclude', 'not')}</div>`
+                  : ''
+              }
+              <span class="hint">Required keywords match if <i>any</i> of them apply.</span>
+            </div>
+          </div>`
+    }
+
+    <div class="form-sec">
+      <div class="row">
+        <div class="field">
+          <label for="ed-rating">Min rating</label>
+          <input class="input" id="ed-rating" type="number" min="0" max="10" step="0.5" data-f="filters.minRating" value="${esc(f.minRating)}" />
+        </div>
+        <div class="field">
+          <label for="ed-votes">Min votes</label>
+          <input class="input" id="ed-votes" type="number" min="0" step="10" data-f="filters.minVotes" value="${esc(f.minVotes)}" />
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="ed-sort">Rank by</label>
+          <select class="select" id="ed-sort" data-f="filters.sort"${trending ? ' disabled title="Trending is ranked by TMDB"' : ''}>
+            ${m.sorts.map((s) => `<option value="${s.id}"${f.sort === s.id ? ' selected' : ''}>${s.name}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label for="ed-limit">Keep top</label>
+          <input class="input" id="ed-limit" type="number" min="1" max="500" data-f="filters.limit" value="${esc(f.limit)}" />
+        </div>
+      </div>
+      <span class="hint">Rating is TMDB’s 0–10 user score. A minimum vote count keeps obscure titles with a handful of 10/10 votes out.</span>
+    </div>
+    ${advancedSection(d)}
+    ${footSection(ed)}`;
 }
+
+// --- results ---
 
 const inFeed = (i) => i.externalId && !i.excluded;
 
 function resultsHtml(ed) {
-  const target = ed.draft.target;
+  const { target, source } = ed.draft;
   if (!ed.items) {
     return `<div class="empty"><h2>Nothing to show yet</h2>
-      <p>Run a preview to see which shows this list would send to ${ARR[target]}.</p>
+      <p>Run a preview to see what this list would send to ${ARR[target]}.</p>
       <p><button class="btn btn-primary" id="res-preview" type="button">${icon('play')}Preview</button></p></div>`;
   }
   const items = ed.items;
@@ -778,6 +1199,8 @@ function resultsHtml(ed) {
     unmatched: items.filter((i) => !i.externalId).length,
     excluded: items.filter((i) => i.excluded).length,
   };
+  const matchable = source === 'anilist' || target === 'sonarr';
+  const tabs = [['all', 'All'], ['feed', 'In feed'], ...(matchable ? [['unmatched', 'Unmatched']] : []), ['excluded', 'Excluded']];
   const shown = items.filter((i) =>
     ed.tab === 'feed' ? inFeed(i) : ed.tab === 'unmatched' ? !i.externalId : ed.tab === 'excluded' ? i.excluded : true,
   );
@@ -788,77 +1211,99 @@ function resultsHtml(ed) {
         ? 'Preview of your unsaved changes — the feed still serves the saved version until you save.'
         : 'Preview — create the list to publish its feed.'
       : `Feed last refreshed ${ago(ed.saved?.last_refresh)}.`;
+  const legend =
+    source === 'anilist'
+      ? ['mapping', 'prequel', 'imdb', 'lookup', 'override']
+      : target === 'sonarr'
+        ? ['tmdb', 'sonarr', 'tmdbOnly']
+        : ['tmdb'];
 
   return `
     <div class="results-head">
       <div>
-        <h2>${esc(ed.seasonLabel || 'Results')} <span class="faint" style="font-weight:500">· ${counts.feed} going to ${ARR[target]}</span></h2>
+        <h2>${esc(ed.label || 'Results')} <span class="faint" style="font-weight:500">· ${counts.feed} going to ${ARR[target]}</span></h2>
         <div class="results-sub">${esc(sub)}${arrConnected(target) ? ` ${lib} already in your library.` : ''}</div>
       </div>
       <div class="tabs">
-        ${[['all', 'All'], ['feed', 'In feed'], ['unmatched', 'Unmatched'], ['excluded', 'Excluded']]
-          .map(([k, v]) => `<button type="button" data-tab="${k}" class="${ed.tab === k ? 'on' : ''}">${v}<span class="n">${counts[k]}</span></button>`)
-          .join('')}
+        ${tabs.map(([k, v]) => `<button type="button" data-tab="${k}" class="${ed.tab === k ? 'on' : ''}">${v}<span class="n">${counts[k]}</span></button>`).join('')}
       </div>
     </div>
     ${ed.warnings.map((w) => `<div class="notice">${esc(w)}</div>`).join('')}
     ${
-      counts.unmatched
+      counts.unmatched && source === 'anilist'
         ? `<div class="notice info">${counts.unmatched} title${counts.unmatched > 1 ? 's have' : ' has'} no ${target === 'sonarr' ? 'TVDB' : 'TMDB'} ID yet. New shows usually get mapped within a few days; the daily refresh picks them up. You can also set an ID by hand with the # button.</div>`
-        : ''
+        : counts.unmatched
+          ? `<div class="notice info">${counts.unmatched} show${counts.unmatched > 1 ? 's have' : ' has'} no TVDB ID yet, which Sonarr needs. ${arrConnected('sonarr') ? 'Sonarr couldn’t find one either — ' : 'Connecting Sonarr in Settings lets Courarr ask it — otherwise '}the daily refresh picks them up once one exists.</div>`
+          : ''
     }
     <div class="legend">
-      ${Object.entries(SOURCES).map(([k, [label, tip]]) => `<span title="${esc(tip)}"><i style="background:var(--src-${k})"></i>${label}</span>`).join('')}
-      <span><i style="background:var(--err)"></i>No match</span>
+      ${legend.map((k) => `<span title="${esc(MATCH[k][1])}"><i style="background:var(--src-${k})"></i>${MATCH[k][0]}</span>`).join('')}
+      ${source === 'anilist' ? '<span><i style="background:var(--err)"></i>No match</span>' : ''}
     </div>
     ${shown.length ? `<div class="grid">${shown.map((it) => itemHtml(it, items.indexOf(it), ed)).join('')}</div>` : '<div class="empty"><p>Nothing here.</p></div>'}`;
 }
 
 function itemHtml(it, idx, ed) {
-  const target = ed.draft.target;
+  const { target, source } = ed.draft;
   const src = it.matchSource;
-  const idLabel = target === 'sonarr' ? 'TVDB' : 'TMDB';
-  const idUrl = target === 'sonarr'
-    ? `https://thetvdb.com/dereferrer/series/${it.externalId}`
-    : `https://www.themoviedb.org/movie/${it.externalId}`;
-  const meta = [FORMAT_NAMES[it.format] || it.format, it.episodes ? `${it.episodes} ep` : null, it.score ? `${it.score}%` : null, it.studio]
-    .filter(Boolean)
-    .join(' · ');
+  const anime = source === 'anilist';
+  let meta;
+  let ids;
+  if (anime) {
+    meta = [FORMAT_NAMES[it.format] || it.format, it.episodes ? `${it.episodes} ep` : null, it.score ? `${it.score}%` : null, it.studio];
+    const idLabel = target === 'sonarr' ? 'TVDB' : 'TMDB';
+    const url = target === 'sonarr' ? `https://thetvdb.com/dereferrer/series/${it.externalId}` : `https://www.themoviedb.org/movie/${it.externalId}`;
+    ids = it.externalId ? `<a href="${url}" target="_blank" rel="noopener">${idLabel} ${it.externalId}</a>` : `<span class="faint">no ${idLabel} ID</span>`;
+  } else {
+    meta = [it.year, it.rating ? `★ ${it.rating}` : null, it.votes ? `${it.votes.toLocaleString()} votes` : null, it.language?.toUpperCase()];
+    ids = [
+      `<a href="${esc(it.siteUrl)}" target="_blank" rel="noopener">TMDB ${it.tmdbId}</a>`,
+      it.tvdbId ? `<a href="https://thetvdb.com/dereferrer/series/${it.tvdbId}" target="_blank" rel="noopener">TVDB ${it.tvdbId}</a>` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  }
   return `
     <div class="item${it.excluded ? ' excluded' : ''}">
       <div class="poster" style="background:${esc(it.color || 'var(--panel-2)')}">
-        ${it.cover ? `<img loading="lazy" src="${esc(it.cover)}" alt="" />` : ''}
+        ${it.cover ? `<img loading="lazy" src="${esc(it.cover)}" alt="" />` : '<div class="no-poster">No poster</div>'}
         <span class="rank">${idx + 1}</span>
         <div class="item-actions">
-          ${ed.saved ? `<button type="button" data-exclude="${it.anilistId}" title="${it.excluded ? 'Put back in the feed' : 'Exclude from the feed'}">${icon(it.excluded ? 'eye' : 'eyeOff')}</button>` : ''}
-          <button type="button" data-override="${it.anilistId}" title="Set the ${idLabel} ID by hand">${icon('hash')}</button>
-          <a href="${esc(it.siteUrl)}" target="_blank" rel="noopener" title="Open on AniList">${icon('ext')}</a>
+          ${ed.saved ? `<button type="button" data-exclude="${it.key}" title="${it.excluded ? 'Put back in the feed' : 'Exclude from the feed'}">${icon(it.excluded ? 'eye' : 'eyeOff')}</button>` : ''}
+          ${anime ? `<button type="button" data-override="${it.key}" title="Set the ${target === 'sonarr' ? 'TVDB' : 'TMDB'} ID by hand">${icon('hash')}</button>` : ''}
+          <a href="${esc(it.siteUrl)}" target="_blank" rel="noopener" title="Open on ${anime ? 'AniList' : 'TMDB'}">${icon('ext')}</a>
         </div>
         <div class="badges">
-          ${
-            src
-              ? `<span class="badge src-${src}" title="${esc(SOURCES[src][1])}"><i></i>${SOURCES[src][0]}</span>`
-              : '<span class="badge src-none"><i></i>No match</span>'
-          }
+          ${src ? `<span class="badge src-${src}" title="${esc(MATCH[src][1])}"><i></i>${MATCH[src][0]}</span>` : '<span class="badge src-none"><i></i>No match</span>'}
           ${it.inLibrary ? '<span class="badge lib">In library</span>' : ''}
           ${it.sequel ? '<span class="badge">Sequel</span>' : ''}
           ${it.excluded ? '<span class="badge src-none">Excluded</span>' : ''}
         </div>
       </div>
       <div class="item-body">
-        <div class="item-title" title="${esc(it.romaji)}">${esc(it.title)}</div>
-        <div class="item-meta">${esc(meta)}</div>
-        <div class="item-id">${it.externalId ? `<a href="${idUrl}" target="_blank" rel="noopener">${idLabel} ${it.externalId}</a>` : `<span class="faint">no ${idLabel} ID</span>`}</div>
+        <div class="item-title" title="${esc(it.subtitle || it.title)}">${esc(it.title)}</div>
+        <div class="item-meta">${esc(meta.filter(Boolean).join(' · '))}</div>
+        <div class="item-id">${ids}</div>
       </div>
     </div>`;
+}
+
+// ---------- dialogs ----------
+
+function openDialog(html, onClose) {
+  dialog.innerHTML = html;
+  dialog.showModal();
+  return new Promise((resolve) => {
+    dialog.addEventListener('close', async () => resolve(await onClose(dialog.returnValue)), { once: true });
+  });
 }
 
 function overrideDialog(item, target) {
   const idLabel = target === 'sonarr' ? 'TVDB' : 'TMDB';
   const key = target === 'sonarr' ? 'tvdbId' : 'tmdbId';
   const current = item.matchSource === 'override' ? item.externalId : '';
-  dialog.innerHTML = `
-    <form method="dialog">
+  const p = openDialog(
+    `<form method="dialog">
       <div>
         <h2>Set ${idLabel} ID</h2>
         <p class="muted" style="margin:4px 0 0">${esc(item.title)}</p>
@@ -877,8 +1322,26 @@ function overrideDialog(item, target) {
         <button class="btn btn-ghost" value="cancel">Cancel</button>
         <button class="btn btn-primary" value="save">Save</button>
       </div>
-    </form>`;
-  dialog.showModal();
+    </form>`,
+    async (action) => {
+      if (action !== 'save' && action !== 'clear') return false;
+      const raw = action === 'clear' ? null : dialog.querySelector('#ov-id').value.trim();
+      if (action === 'save' && !/^\d+$/.test(raw || '')) {
+        toast(`${idLabel} IDs are whole numbers`, true);
+        return false;
+      }
+      try {
+        await api(`/api/overrides/${item.key}`, { method: 'PUT', body: { [key]: raw, title: item.title } });
+        if (raw) Object.assign(item, { externalId: Number(raw), matchSource: 'override' });
+        else Object.assign(item, { externalId: null, matchSource: null });
+        toast(raw ? `${item.title} → ${idLabel} ${raw}` : 'Override removed — refresh to re-match');
+        return true;
+      } catch (e) {
+        toast(e.message, true);
+        return false;
+      }
+    },
+  );
   // Enter would otherwise "click" the first button in the form (Remove/Cancel).
   dialog.querySelector('#ov-id').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -886,31 +1349,154 @@ function overrideDialog(item, target) {
       dialog.close('save');
     }
   });
-  return new Promise((resolve) => {
-    dialog.addEventListener(
-      'close',
-      async () => {
-        const action = dialog.returnValue;
-        if (action !== 'save' && action !== 'clear') return resolve(false);
-        const raw = action === 'clear' ? null : dialog.querySelector('#ov-id').value.trim();
-        if (action === 'save' && !/^\d+$/.test(raw || '')) {
-          toast(`${idLabel} IDs are whole numbers`, true);
-          return resolve(false);
-        }
-        try {
-          await api(`/api/overrides/${item.anilistId}`, { method: 'PUT', body: { [key]: raw, title: item.title } });
-          if (raw) Object.assign(item, { externalId: Number(raw), matchSource: 'override' });
-          else Object.assign(item, { externalId: null, matchSource: null });
-          toast(raw ? `${item.title} → ${idLabel} ${raw}` : 'Override removed — refresh to re-match');
-          resolve(true);
-        } catch (e) {
-          toast(e.message, true);
-          resolve(false);
-        }
-      },
-      { once: true },
-    );
+  return p;
+}
+
+const SONARR_MONITOR = {
+  all: 'All episodes',
+  future: 'Future episodes',
+  missing: 'Missing episodes',
+  existing: 'Existing episodes',
+  recent: 'Recent episodes',
+  firstSeason: 'First season',
+  lastSeason: 'Latest season',
+  pilot: 'Pilot episode',
+  none: 'None',
+};
+const RADARR_MONITOR = { movieOnly: 'Movie only', movieAndCollection: 'Movie and collection', none: 'None' };
+const RADARR_AVAIL = { announced: 'Announced', inCinemas: 'In cinemas', released: 'Released' };
+
+async function arrDialog(list, arrInfo) {
+  const kind = list.target;
+  const name = ARR[kind];
+  let opts;
+  try {
+    opts = await api(`/api/arr/${kind}/options`);
+  } catch (e) {
+    toast(e.message, true);
+    return false;
+  }
+  const il = arrInfo?.importList;
+  const rec = arrInfo?.recommendedSeriesType || (list.source === 'tmdb' ? 'standard' : 'anime');
+  const cur = {
+    rootFolderPath: il?.rootFolderPath || opts.rootFolders[0]?.path || '',
+    qualityProfileId: il?.qualityProfileId ?? opts.qualityProfiles[0]?.id,
+    seriesType: il?.seriesType || rec,
+    monitor: il?.monitor || (kind === 'sonarr' ? 'all' : 'movieOnly'),
+    minimumAvailability: il?.minimumAvailability || 'released',
+    seasonFolder: il ? il.seasonFolder !== false : true,
+    searchOnAdd: il ? !!il.searchOnAdd : true,
+    tags: il?.tags || [],
+  };
+  const gb = (b) => (b ? `${(b / 1024 ** 3).toFixed(0)} GB free` : '');
+  const sel = (id, entries, value) =>
+    `<select class="select" id="${id}">${entries.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(value) ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+
+  if (!opts.rootFolders.length) {
+    toast(`${name} has no root folders yet — add one in ${name} → Settings → Media Management`, true);
+    return false;
+  }
+
+  const p = openDialog(
+    `<form method="dialog" class="arr-form">
+      <div>
+        <h2>${il ? `Edit in ${name}` : `Add to ${name}`}</h2>
+        <p class="muted" style="margin:4px 0 0">Creates the import list <b>Courarr – ${esc(list.name)}</b> pointing at this list’s feed.</p>
+      </div>
+      <div class="field">
+        <label for="arr-root">Root folder</label>
+        ${sel('arr-root', opts.rootFolders.map((r) => [r.path, `${r.path}  ${gb(r.freeSpace)}`]), cur.rootFolderPath)}
+      </div>
+      <div class="field">
+        <label for="arr-qp">Quality profile</label>
+        ${sel('arr-qp', opts.qualityProfiles.map((q) => [q.id, q.name]), cur.qualityProfileId)}
+      </div>
+      ${
+        kind === 'sonarr'
+          ? `<div class="field">
+              <span class="label">Series type</span>
+              <div class="seg" id="arr-type">${Object.entries(SERIES_TYPES)
+                .map(([v, l]) => `<button type="button" data-v="${v}" class="${cur.seriesType === v ? 'on' : ''}">${l}${v === rec ? ' ✓' : ''}</button>`)
+                .join('')}</div>
+              <span class="hint" id="arr-type-hint"></span>
+            </div>
+            <div class="field">
+              <label for="arr-mon">Monitor</label>
+              ${sel('arr-mon', Object.entries(SONARR_MONITOR), cur.monitor)}
+            </div>
+            <label class="check"><input type="checkbox" id="arr-sf"${cur.seasonFolder ? ' checked' : ''} /><span><b>Season folders</b></span></label>`
+          : `<div class="row">
+              <div class="field"><label for="arr-mon">Monitor</label>${sel('arr-mon', Object.entries(RADARR_MONITOR), cur.monitor)}</div>
+              <div class="field"><label for="arr-avail">Minimum availability</label>${sel('arr-avail', Object.entries(RADARR_AVAIL), cur.minimumAvailability)}</div>
+            </div>`
+      }
+      <label class="check"><input type="checkbox" id="arr-search"${cur.searchOnAdd ? ' checked' : ''} />
+        <span><b>Search as soon as a title is added</b><span class="hint">Otherwise ${name} waits for new releases via RSS.</span></span></label>
+      ${
+        opts.tags.length
+          ? `<div class="field"><span class="label">Tags</span><div class="chips" id="arr-tags">${opts.tags
+              .map((t) => `<button type="button" class="chip${cur.tags.includes(t.id) ? ' on' : ''}" data-id="${t.id}">${esc(t.label)}</button>`)
+              .join('')}</div></div>`
+          : ''
+      }
+      <div class="actions">
+        ${il ? `<button class="btn btn-ghost btn-danger" value="remove" style="margin-right:auto">Remove from ${name}</button>` : ''}
+        <button class="btn btn-ghost" value="cancel">Cancel</button>
+        <button class="btn btn-primary" value="save">${il ? 'Save' : `Add to ${name}`}</button>
+      </div>
+    </form>`,
+    async (action) => {
+      if (action === 'remove') {
+        if (!confirm(`Remove the “Courarr – ${list.name}” import list from ${name}? Titles it already added stay in your library.`)) return false;
+        await api(`/api/lists/${list.id}/arr`, { method: 'DELETE' }).catch((e) => toast(e.message, true));
+        toast(`Removed from ${name}`);
+        return true;
+      }
+      if (action !== 'save') return false;
+      const body = {
+        rootFolderPath: dialog.querySelector('#arr-root').value,
+        qualityProfileId: Number(dialog.querySelector('#arr-qp').value),
+        monitor: dialog.querySelector('#arr-mon').value,
+        searchOnAdd: dialog.querySelector('#arr-search').checked,
+        tags: [...dialog.querySelectorAll('#arr-tags .chip.on')].map((c) => Number(c.dataset.id)),
+      };
+      if (kind === 'sonarr') {
+        body.seriesType = dialog.querySelector('#arr-type .on')?.dataset.v || rec;
+        body.seasonFolder = dialog.querySelector('#arr-sf').checked;
+      } else {
+        body.minimumAvailability = dialog.querySelector('#arr-avail').value;
+      }
+      try {
+        await api(`/api/lists/${list.id}/arr`, { method: 'PUT', body });
+        toast(il ? `${name} import list updated` : `Added to ${name} — it will import the feed on its next list sync`);
+        return true;
+      } catch (e) {
+        toast(e.message, true);
+        return false;
+      }
+    },
+  );
+
+  const typeHint = () => {
+    const el = dialog.querySelector('#arr-type-hint');
+    if (!el) return;
+    const v = dialog.querySelector('#arr-type .on')?.dataset.v;
+    el.innerHTML =
+      v === rec
+        ? `Recommended for ${SOURCE_NAMES[list.source].toLowerCase()} lists.`
+        : `<span class="warn-text">This is ${list.source === 'tmdb' ? 'a TV list' : 'an anime list'} — ${SERIES_TYPES[rec]} is usually right. ${
+            v === 'anime' ? 'Anime type uses absolute episode numbering.' : 'Standard type breaks absolute-numbered anime releases.'
+          }</span>`;
+  };
+  typeHint();
+  dialog.querySelector('#arr-type')?.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    dialog.querySelectorAll('#arr-type button').forEach((x) => x.classList.toggle('on', x === b));
+    typeHint();
   });
+  dialog.querySelector('#arr-tags')?.addEventListener('click', (e) => e.target.closest('.chip')?.classList.toggle('on'));
+  return p;
 }
 
 // ---------- settings ----------
@@ -931,9 +1517,17 @@ async function viewSettings() {
   const preset = SCHEDULES.some(([v]) => v === s.schedule) ? s.schedule : 'custom';
   const origin = location.origin;
 
+  const keyPlaceholder = (kind, hint) => (s[`${kind}ApiKeySet`] ? 'Saved — leave blank to keep' : hint);
+  const testRow = (kind) => `
+    <div class="row" style="flex:none">
+      <button type="button" class="btn btn-sm" data-test="${kind}" style="flex:none">Test</button>
+      <span class="test-result" id="${kind}-test"></span>
+      ${s[`${kind}ApiKeySet`] ? `<button type="button" class="btn btn-sm btn-ghost btn-danger" data-clear="${kind}" style="flex:none">Forget key</button>` : ''}
+    </div>`;
+
   const arrPanel = (kind) => `
     <div class="panel">
-      <div class="panel-head"><span class="pill ${kind}">${kind}</span><div><h2>${ARR[kind]} connection</h2><p>Optional — enables title lookups, “in library” badges and instant syncs.</p></div></div>
+      <div class="panel-head"><span class="pill ${kind}">${kind}</span><div><h2>${ARR[kind]}</h2><p>Optional — lets Courarr add lists to ${ARR[kind]} for you, show “in library” badges and sync instantly.</p></div></div>
       <div class="panel-body">
         <div class="field">
           <label for="${kind}-url">URL</label>
@@ -942,13 +1536,9 @@ async function viewSettings() {
         <div class="field">
           <label for="${kind}-key">API key</label>
           <input class="input mono" id="${kind}-key" name="${kind}ApiKey" type="password" autocomplete="new-password"
-            placeholder="${s[`${kind}ApiKeySet`] ? 'Saved — leave blank to keep' : `${ARR[kind]} → Settings → General → API Key`}" />
+            placeholder="${keyPlaceholder(kind, `${ARR[kind]} → Settings → General → API Key`)}" />
         </div>
-        <div class="row" style="flex:none">
-          <button type="button" class="btn btn-sm" data-test="${kind}" style="flex:none">Test connection</button>
-          <span class="test-result" id="${kind}-test"></span>
-          ${s[`${kind}ApiKeySet`] ? `<button type="button" class="btn btn-sm btn-ghost btn-danger" data-clear="${kind}" style="flex:none">Forget key</button>` : ''}
-        </div>
+        ${testRow(kind)}
       </div>
     </div>`;
 
@@ -976,7 +1566,29 @@ async function viewSettings() {
         </div>
 
         <div class="panel">
-          <div class="panel-head"><div><h2>Lists</h2><p>How seasons and titles are handled.</p></div></div>
+          <div class="panel-head"><span class="pill normal">TMDB</span><div><h2>TMDB</h2><p>Needed for TV & movie lists. Free: themoviedb.org → Settings → API.</p></div></div>
+          <div class="panel-body">
+            <div class="field">
+              <label for="tmdb-key">API key or Read Access Token</label>
+              <input class="input mono" id="tmdb-key" name="tmdbApiKey" type="password" autocomplete="new-password"
+                placeholder="${keyPlaceholder('tmdb', 'Paste either the API key or the long read access token')}" />
+            </div>
+            <div class="field">
+              <label for="tmdb-region">Your region</label>
+              <select class="select" id="tmdb-region" name="tmdbRegion">
+                ${REGIONS.map((r) => `<option value="${r}"${s.tmdbRegion === r ? ' selected' : ''}>${r}</option>`).join('')}
+              </select>
+              <span class="hint">Default region for streaming services and digital release dates. Lists can override it.</span>
+            </div>
+            ${testRow('tmdb')}
+          </div>
+        </div>
+
+        ${arrPanel('sonarr')}
+        ${arrPanel('radarr')}
+
+        <div class="panel">
+          <div class="panel-head"><div><h2>Anime lists</h2><p>How seasons, titles and IDs are handled for AniList lists.</p></div></div>
           <div class="panel-body">
             <div class="field">
               <label for="rollover">Switch to the next season this many days early</label>
@@ -990,38 +1602,28 @@ async function viewSettings() {
                 <option value="romaji"${s.titleLanguage === 'romaji' ? ' selected' : ''}>Romaji</option>
               </select>
             </div>
-            <div class="field">
-              <label for="feed-base">Feed base URL</label>
-              <input class="input" id="feed-base" name="feedBaseUrl" value="${esc(s.feedBaseUrl)}" placeholder="${esc(origin)}" />
-              <span class="hint">The address Sonarr/Radarr use to reach Courarr. Leave blank to use this page’s address.</span>
-            </div>
-          </div>
-        </div>
-
-        ${arrPanel('sonarr')}
-        ${arrPanel('radarr')}
-
-        <div class="panel">
-          <div class="panel-head"><div><h2>Matching</h2><p>How AniList entries are turned into TVDB / TMDB IDs.</p></div></div>
-          <div class="panel-body">
             <label class="check"><input type="checkbox" name="arrLookupFallback"${s.arrLookupFallback ? ' checked' : ''} />
-              <span><b>Search Sonarr/Radarr by title when the mapping has no ID</b><span class="hint">Exact title + year matches only. Needs a connection above.</span></span></label>
-            <label class="check"><input type="checkbox" name="triggerArrSync"${s.triggerArrSync ? ' checked' : ''} />
-              <span><b>Tell Sonarr/Radarr to sync import lists after a refresh</b><span class="hint">Otherwise they pick up changes on their own list interval (Radarr: every 12h minimum).</span></span></label>
+              <span><b>Search Sonarr/Radarr by title when the mapping has no ID</b><span class="hint">Exact title + year matches only. Needs a connection.</span></span></label>
             <div class="row" style="flex:none">
-              <span class="hint" style="flex:1">Mapping database: ${st.mapping.entries.toLocaleString()} entries, updated ${esc(ago(st.mapping.updatedAt))}${st.mapping.lastError ? ` — <span style="color:var(--err)">${esc(st.mapping.lastError)}</span>` : ''}</span>
+              <span class="hint" style="flex:1">Anime ID mapping: ${st.mapping.entries.toLocaleString()} entries, updated ${esc(ago(st.mapping.updatedAt))}${st.mapping.lastError ? ` — <span style="color:var(--err)">${esc(st.mapping.lastError)}</span>` : ''}</span>
               <button type="button" class="btn btn-sm" id="map-update" style="flex:none">${icon('refresh')}Update now</button>
             </div>
           </div>
         </div>
 
         <div class="panel">
-          <div class="panel-head"><div><h2>Connecting a list</h2><p>Do this once per list.</p></div></div>
+          <div class="panel-head"><div><h2>Feeds</h2><p>How Sonarr and Radarr reach Courarr.</p></div></div>
           <div class="panel-body">
+            <div class="field">
+              <label for="feed-base">Feed base URL</label>
+              <input class="input" id="feed-base" name="feedBaseUrl" value="${esc(s.feedBaseUrl)}" placeholder="${esc(origin)}" />
+              <span class="hint">The address Sonarr/Radarr use to reach Courarr. Leave blank to use this page’s address.</span>
+            </div>
+            <label class="check"><input type="checkbox" name="triggerArrSync"${s.triggerArrSync ? ' checked' : ''} />
+              <span><b>Tell Sonarr/Radarr to sync import lists after a refresh</b><span class="hint">Otherwise they pick up changes on their own list interval (Radarr: every 12h minimum).</span></span></label>
             <ol class="steps">
-              <li><b>Sonarr:</b> Settings → Import Lists → + → <b>Custom List</b>. Paste the list’s feed URL, pick a root folder and quality profile, and set <b>Series Type: Anime</b>. “Monitor: Future Episodes” works well for sequels you already have.</li>
-              <li><b>Radarr:</b> Settings → Import Lists → + → <b>Custom Lists</b>. Paste the feed URL and pick a root folder / quality profile.</li>
-              <li>Copy feed URLs from the list cards on the Lists page.</li>
+              <li>With a connection above, open a list and click <b>Add to Sonarr/Radarr</b>. Anime lists are added with series type <b>Anime</b>, TV lists with <b>Standard</b>.</li>
+              <li>Without one: Sonarr → Settings → Import Lists → + → <b>Custom List</b> (set Series Type yourself); Radarr → <b>Custom Lists</b>. Paste the feed URL from the list card.</li>
             </ol>
           </div>
         </div>
@@ -1047,6 +1649,8 @@ async function viewSettings() {
       sonarrApiKey: fd.get('sonarrApiKey'),
       radarrUrl: fd.get('radarrUrl'),
       radarrApiKey: fd.get('radarrApiKey'),
+      tmdbApiKey: fd.get('tmdbApiKey'),
+      tmdbRegion: fd.get('tmdbRegion'),
       arrLookupFallback: fd.get('arrLookupFallback') === 'on',
       triggerArrSync: fd.get('triggerArrSync') === 'on',
     };
@@ -1056,6 +1660,7 @@ async function viewSettings() {
     e.preventDefault();
     try {
       state.settings = await api('/api/settings', { method: 'PUT', body: collect() });
+      state.tmdbMeta = {};
       toast('Settings saved');
       pollStatus();
       viewSettings();
@@ -1086,7 +1691,7 @@ async function viewSettings() {
       const kind = b.dataset.clear;
       const key = `clear${kind[0].toUpperCase()}${kind.slice(1)}ApiKey`;
       state.settings = await api('/api/settings', { method: 'PUT', body: { [key]: true } });
-      toast(`${ARR[kind]} API key removed`);
+      toast('API key removed');
       viewSettings();
     }
     if (b.id === 'map-update') {
@@ -1110,7 +1715,7 @@ async function viewSettings() {
 async function viewActivity() {
   const [runs, overrides] = await Promise.all([api('/api/runs'), api('/api/overrides')]);
   view.innerHTML = `
-    <div class="page-head"><div><h1>Activity</h1><p>Recent refreshes and the IDs you have set by hand.</p></div></div>
+    <div class="page-head"><div><h1>Activity</h1><p>Recent refreshes and the anime IDs you have set by hand.</p></div></div>
     <div class="panel" style="margin-bottom:16px">
       ${
         runs.length
@@ -1122,7 +1727,7 @@ async function viewActivity() {
       }
     </div>
     <div class="panel">
-      <div class="panel-head"><div><h2>Manual IDs</h2><p>Set with the # button on a title. They win over every other match.</p></div></div>
+      <div class="panel-head"><div><h2>Manual IDs</h2><p>Set with the # button on an anime title. They win over every other match.</p></div></div>
       ${
         overrides.length
           ? `<table class="table" style="margin-top:8px">
@@ -1158,7 +1763,7 @@ function runRow(r) {
     .map((l) =>
       l.error
         ? `<span><b>${esc(l.name)}</b> — <span style="color:var(--err)">${esc(l.error)}</span></span>`
-        : `<span><b>${esc(l.name)}</b> <span class="muted">${l.matched}/${l.total} matched · ${esc(l.seasonLabel)}</span></span>`,
+        : `<span><b>${esc(l.name)}</b> <span class="muted">${l.matched}/${l.total} matched · ${esc(l.label)}</span></span>`,
     )
     .join('');
   const extra = [

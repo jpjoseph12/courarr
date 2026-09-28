@@ -2,23 +2,46 @@
 
 <h1 align="center">Courarr</h1>
 
-<p align="center">Seasonal anime lists from AniList, served as Custom Lists for <b>Sonarr</b> and <b>Radarr</b>.</p>
+<p align="center">Auto-updating lists for <b>Sonarr</b> and <b>Radarr</b>: seasonal anime from AniList, and regular TV & movies from TMDB.</p>
 
-A *cour* is an anime broadcast season. Courarr lets you build lists like "this season's 50 most popular shows", "new (non-sequel) shows next season" or "this year's anime movies". It turns each list into a feed URL that Sonarr or Radarr imports. Lists refresh every night at 3 AM (configurable) or when you click **Refresh**.
+Courarr builds lists from saved searches and serves each one as a feed that Sonarr or Radarr imports. Examples:
 
-- **Web UI**: build lists with season, format, status, genre, tag, country, popularity and score filters. Preview the results with cover art before saving.
-- **Sonarr and Radarr**: series feeds use TVDB IDs; movie feeds use TMDB IDs.
-- **Seasons roll forward**: "this season" and "next season" move on their own, switching a configurable number of days before a season starts.
-- **Sequels handled**: "Show Season 2" usually has no ID of its own yet, so Courarr uses the earlier season's series. That's also how Sonarr stores it.
-- **Fixes when matching fails**: exclude a title from a list, or set its TVDB/TMDB ID by hand.
-- **Optional Sonarr/Radarr connection**: exact-title lookups for brand-new shows, "already in library" badges, and an import-list sync right after each refresh.
-- **Self-contained**: one container and a SQLite database in `/config`. No accounts or API keys needed to get started.
+- "this season's 50 most popular anime"
+- "new scripted series that premiered in the last 30 days, no anime"
+- "movies released on digital in the last 60 days rated 6.5+"
+
+Lists refresh every night at 3 AM (configurable) or when you click **Refresh**.
+
+A *cour* is an anime broadcast season, hence the name.
+
+## Two kinds of list
+
+| | **Anime** | **TV & movies** |
+|---|---|---|
+| Source | [AniList](https://anilist.co) | [TMDB](https://www.themoviedb.org) (free API key) |
+| Filters | season (this, next, last or a specific season, or a year), format, status, sequels, genres, tags, country, popularity, score | discover or trending, release window (last/next N days, year, airing this week), digital vs cinema release, genres, keywords, language, country, streaming service, network, show type and status, rating, votes |
+| Sonarr series type | **Anime** | **Standard**. Anime is left out by default so it can't be added with the wrong type. |
+| Radarr | anime films | any films |
+
+The two kinds stay separate. Anime lists only contain anime and are added to Sonarr as *Anime* series (absolute episode numbering). TV lists leave anime out and are added as *Standard* series. Each can use its own root folder, e.g. `/tv/anime` vs `/tv`.
+
+## Features
+
+- **Web UI**: build lists with filters and preview the results with posters before saving.
+- **Add to Sonarr/Radarr in one click** (optional connection). Courarr creates the Custom List import list with the right series type, root folder, quality profile, monitor option and tags. It keeps that import list in step when you rename the list, and removes it when you delete the list.
+- **Automatic dates**: "this season", "next season", "last 30 days" and similar windows move forward on every refresh.
+- **Sequels handled**: "Show Season 2" is sent as the same series, which is how Sonarr stores seasons.
+- **Fixes when matching fails**: exclude a title from a list, or set an anime title's TVDB/TMDB ID by hand.
+- **Library badges**: shows which titles are already in your library, and tells Sonarr/Radarr to sync right after a refresh.
+- **Self-contained**: one container and a SQLite database in `/config`.
 
 ## Install on Unraid
 
 1. **Docker** tab → at the bottom, **Template repositories** → add `https://github.com/jpjoseph12/courarr` → **Save**.
-2. **Add Container** → **Template** → pick **Courarr** under *User templates*/*jpjoseph12* → **Apply**.
-3. Open the WebUI (port `6161`).
+2. **Add Container** → **Template** → pick **Courarr** → **Apply**.
+3. Open the WebUI (port `6161`), go to **Settings** and add:
+   - your Sonarr/Radarr URL and API key (optional, but needed for one-click adding),
+   - a TMDB key (only for TV & movie lists).
 
 Unraid passes your server's time zone to the container, so "3 AM" is 3 AM local time.
 
@@ -39,26 +62,35 @@ or use the included [`docker-compose.yml`](docker-compose.yml).
 | `UMASK` | `002` | |
 | `PORT` | `6161` | Port inside the container |
 
-## Connecting a list
+## TMDB key
 
-Copy a list's feed URL from its card (`http://<server>:6161/feed/<name>`), then:
+TV & movie lists need a free TMDB key. Get one at themoviedb.org → Settings → API, then paste either the *API Key* or the *API Read Access Token* into Courarr's Settings.
 
-- **Sonarr** → Settings → Import Lists → **+** → **Custom List** → paste the URL. Set **Series Type: Anime**, then pick a root folder, quality profile and monitor option. *Future Episodes* works well if you already own earlier seasons.
-- **Radarr** → Settings → Import Lists → **+** → **Custom Lists** → paste the URL and pick a root folder and quality profile.
+## Adding a list without connecting Sonarr/Radarr
 
-Sonarr and Radarr check import lists on their own timer (Radarr every 12 h at most). If you add a Sonarr/Radarr URL and API key in Courarr's **Settings**, Courarr also asks them to sync right after each refresh.
+Copy the list's feed URL from its card (`http://<server>:6161/feed/<name>`), then:
 
-## How matching works
+- **Sonarr** → Settings → Import Lists → **+** → **Custom List** → paste the URL. Set **Series Type** to *Anime* for anime lists or *Standard* for TV lists.
+- **Radarr** → Settings → Import Lists → **+** → **Custom Lists** → paste the URL.
 
-AniList has one entry per season, while Sonarr/Radarr need TVDB/TMDB IDs. For each title Courarr tries these in order:
+## How IDs are matched
 
-1. **Manual**: an ID you set with the **#** button (applies to every list).
-2. **Mapped**: the community [Fribb/anime-lists](https://github.com/Fribb/anime-lists) mapping, downloaded daily.
+Sonarr's Custom List needs TVDB IDs (Sonarr v4 ignores the others), and Radarr's needs TMDB IDs.
+
+**Anime (AniList):**
+
+1. **Manual**: an ID you set with the **#** button.
+2. **Mapped**: the community [Fribb/anime-lists](https://github.com/Fribb/anime-lists) mapping, updated daily.
 3. **Via prequel** (Sonarr): sequels use the earlier season's TVDB series.
 4. **Via IMDb** (Radarr, needs a connection): Radarr lookup by the IMDb ID from the mapping.
 5. **Title match** (needs a connection): Sonarr/Radarr search, accepted only on an exact title match with the year within ±1.
 
-Brand-new shows can take a few days after they're announced to get a TVDB entry and a mapping. They show as **No match** until then, and the nightly refresh picks them up once they're mapped.
+**TV & movies (TMDB):**
+
+- Movies use their TMDB ID directly.
+- Shows use the TVDB ID that TMDB lists. If TMDB doesn't have one yet, Courarr asks Sonarr to resolve the TMDB ID (needs a connection).
+
+Titles with no ID yet show as **Unmatched** and stay out of the feed until one exists. The nightly refresh picks them up once they're mapped.
 
 ## API
 
@@ -77,9 +109,11 @@ npm run dev     # http://localhost:6161, data in ./.config
 npm test
 ```
 
+You can develop without a TMDB key: run `node test/fixtures/mock-tmdb.mjs 7071`, start Courarr with `TMDB_BASE_URL=http://localhost:7071/3`, and use the API key `test`.
+
 Plain Node 24 (built-in `node:sqlite`), Express and a dependency-free front end. There's no build step.
 
-Anime data comes from [AniList](https://anilist.co). ID mappings come from [Fribb/anime-lists](https://github.com/Fribb/anime-lists).
+Anime data comes from [AniList](https://anilist.co), and anime ID mappings from [Fribb/anime-lists](https://github.com/Fribb/anime-lists). TV and movie data comes from [TMDB](https://www.themoviedb.org). This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ## License
 

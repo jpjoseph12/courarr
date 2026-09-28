@@ -21,6 +21,11 @@
   --src-lookup: #fbbf24;
   --src-imdb: #60a5fa;
   --src-override: #c084fc;
+  --src-tmdb: #38bdf8;
+  --src-tmdbOnly: #fb923c;
+  --src-sonarr: #35c5f4;
+  --anime: #ff7a93;
+  --normal: #a3e635;
   --radius: 10px;
   --radius-sm: 7px;
   --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -137,6 +142,8 @@ h3 { font-size: 13px; font-weight: 600; }
 .seg button.on { background: var(--panel-3); color: var(--text); }
 .seg button.on.sonarr { color: var(--sonarr); }
 .seg button.on.radarr { color: var(--radarr); }
+.seg button.on.anime { color: var(--anime); }
+.seg button.on.normal { color: var(--normal); }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
@@ -166,9 +173,11 @@ h3 { font-size: 13px; font-weight: 600; }
 }
 .card.disabled { opacity: 0.6; }
 .card-top { padding: 16px 18px 0; display: flex; flex-direction: column; gap: 8px; }
-.card-title { display: flex; align-items: center; gap: 10px; }
-.card-title a { text-decoration: none; font-size: 16px; font-weight: 650; }
-.card-title a:hover { color: var(--accent-2); }
+.card-title { display: flex; align-items: center; gap: 6px; }
+.card-name { text-decoration: none; font-size: 16px; font-weight: 650; }
+.card-name:hover { color: var(--accent-2); }
+.linked { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.linked .ico { width: 13px; height: 13px; }
 .card-meta { color: var(--muted); font-size: 13px; }
 .stats { display: flex; gap: 24px; padding: 14px 18px; }
 .stat b { display: block; font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
@@ -194,6 +203,8 @@ h3 { font-size: 13px; font-weight: 600; }
 .pill.sonarr { color: var(--sonarr); background: rgba(53, 197, 244, 0.08); }
 .pill.radarr { color: var(--radarr); background: rgba(255, 194, 48, 0.08); }
 .pill.off { color: var(--faint); }
+.pill.anime { color: var(--anime); background: rgba(255, 122, 147, 0.08); }
+.pill.normal { color: var(--normal); background: rgba(163, 230, 53, 0.07); }
 
 .empty {
   border: 1px dashed var(--line-2); border-radius: var(--radius);
@@ -226,6 +237,19 @@ h3 { font-size: 13px; font-weight: 600; }
 }
 .form-foot .spacer { flex: 1; }
 .tag-add { display: flex; gap: 6px; }
+.tag-add .btn { height: 36px; }
+.label-note { color: var(--faint); text-transform: none; letter-spacing: 0; font-weight: 400; }
+.spacer { flex: 1; }
+.warn-text { color: var(--warn); }
+
+.arr-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: -8px 0 18px; padding: 10px 12px 10px 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  font-size: 13px;
+}
+.arr-bar:empty { display: none; }
+.arr-bar .ico { width: 14px; height: 14px; vertical-align: -2px; }
 details.adv summary { cursor: pointer; color: var(--muted); font-weight: 550; font-size: 13px; }
 details.adv[open] summary { margin-bottom: 12px; }
 details.adv > div { display: flex; flex-direction: column; gap: 14px; }
@@ -260,6 +284,7 @@ details.adv > div { display: flex; flex-direction: column; gap: 14px; }
 .item.excluded:hover { opacity: 0.85; }
 .poster { position: relative; aspect-ratio: 2 / 3; background: var(--panel-2); overflow: hidden; }
 .poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.no-poster { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); font-size: 12px; }
 .poster .rank {
   position: absolute; top: 8px; left: 8px; min-width: 26px; height: 22px; padding: 0 6px;
   border-radius: 5px; background: rgba(13, 15, 20, 0.82); font-size: 12px; font-weight: 700;
@@ -276,6 +301,9 @@ details.adv > div { display: flex; flex-direction: column; gap: 14px; }
 .src-lookup { color: var(--src-lookup); }
 .src-imdb { color: var(--src-imdb); }
 .src-override { color: var(--src-override); }
+.src-tmdb { color: var(--src-tmdb); }
+.src-tmdbOnly { color: var(--src-tmdbOnly); }
+.src-sonarr { color: var(--src-sonarr); }
 .src-none { color: var(--err); }
 .badge.lib { color: var(--text); }
 .item-actions {
@@ -334,6 +362,7 @@ details.adv > div { display: flex; flex-direction: column; gap: 14px; }
 }
 .dialog::backdrop { background: rgba(5, 6, 9, 0.7); backdrop-filter: blur(2px); }
 .dialog form { display: flex; flex-direction: column; gap: 14px; padding: 20px; }
+.dialog:has(.arr-form) { width: min(520px, calc(100vw - 32px)); }
 .dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 .toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }

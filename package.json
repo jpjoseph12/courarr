@@ -1,7 +1,7 @@
 {
   "name": "courarr",
   "version": "0.1.0",
-  "description": "Filtered seasonal anime lists from AniList, served as Custom Lists for Sonarr and Radarr.",
+  "description": "Auto-updating Sonarr and Radarr lists: seasonal anime from AniList, TV and movies from TMDB.",
   "type": "module",
   "private": true,
   "license": "MIT",

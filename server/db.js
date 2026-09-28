@@ -12,8 +12,10 @@ db.exec(`
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL,
     slug         TEXT NOT NULL UNIQUE,
+    source       TEXT NOT NULL DEFAULT 'anilist' CHECK (source IN ('anilist', 'tmdb')),
     target       TEXT NOT NULL CHECK (target IN ('sonarr', 'radarr')),
     filters      TEXT NOT NULL,
+    arr_list_id  INTEGER,
     enabled      INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -23,17 +25,17 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS list_items (
     list_id    INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
-    anilist_id INTEGER NOT NULL,
+    item_key   INTEGER NOT NULL,
     position   INTEGER NOT NULL,
     data       TEXT NOT NULL,
-    PRIMARY KEY (list_id, anilist_id)
+    PRIMARY KEY (list_id, item_key)
   );
 
   CREATE TABLE IF NOT EXISTS exclusions (
     list_id    INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
-    anilist_id INTEGER NOT NULL,
+    item_key   INTEGER NOT NULL,
     title      TEXT,
-    PRIMARY KEY (list_id, anilist_id)
+    PRIMARY KEY (list_id, item_key)
   );
 
   CREATE TABLE IF NOT EXISTS overrides (
@@ -47,6 +49,14 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+
+  -- TMDB TV id -> TVDB / IMDb ids (one API call per show, so cache them).
+  CREATE TABLE IF NOT EXISTS tmdb_tv_ids (
+    tmdb_id    INTEGER PRIMARY KEY,
+    tvdb_id    INTEGER,
+    imdb_id    TEXT,
+    fetched_at TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS runs (
@@ -74,6 +84,8 @@ export const SETTING_DEFAULTS = {
   arrLookupFallback: true,
   triggerArrSync: true,
   titleLanguage: 'english',
+  tmdbApiKey: '',
+  tmdbRegion: 'US',
 };
 
 export function getSettings() {
@@ -117,20 +129,26 @@ export const getList = (id) => rowToList(db.prepare('SELECT * FROM lists WHERE i
 export const getListBySlug = (slug) =>
   rowToList(db.prepare('SELECT * FROM lists WHERE slug = ?').get(slug));
 
-export function createList({ name, slug, target, filters, enabled = true }) {
+export function createList({ name, slug, source, target, filters, enabled = true }) {
   const res = db
-    .prepare('INSERT INTO lists (name, slug, target, filters, enabled) VALUES (?, ?, ?, ?, ?)')
-    .run(name, slug, target, JSON.stringify(filters), enabled ? 1 : 0);
+    .prepare('INSERT INTO lists (name, slug, source, target, filters, enabled) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(name, slug, source, target, JSON.stringify(filters), enabled ? 1 : 0);
   return getList(res.lastInsertRowid);
 }
 
-export function updateList(id, { name, slug, target, filters, enabled }) {
+export function updateList(id, { name, slug, source, target, filters, enabled }) {
+  const prev = getList(id);
+  // The Sonarr/Radarr import list belongs to one app; forget it if the target changes.
+  const arrListId = prev && prev.target === target ? prev.arr_list_id : null;
   db.prepare(
-    `UPDATE lists SET name = ?, slug = ?, target = ?, filters = ?, enabled = ?, updated_at = ?
-     WHERE id = ?`,
-  ).run(name, slug, target, JSON.stringify(filters), enabled ? 1 : 0, now(), id);
+    `UPDATE lists SET name = ?, slug = ?, source = ?, target = ?, filters = ?, enabled = ?,
+       arr_list_id = ?, updated_at = ? WHERE id = ?`,
+  ).run(name, slug, source, target, JSON.stringify(filters), enabled ? 1 : 0, arrListId, now(), id);
   return getList(id);
 }
+
+export const setArrListId = (id, arrListId) =>
+  db.prepare('UPDATE lists SET arr_list_id = ? WHERE id = ?').run(arrListId, id);
 
 export const deleteList = (id) => db.prepare('DELETE FROM lists WHERE id = ?').run(id);
 
@@ -144,9 +162,9 @@ export function saveListItems(listId, items, error = null) {
     if (!error) {
       db.prepare('DELETE FROM list_items WHERE list_id = ?').run(listId);
       const ins = db.prepare(
-        'INSERT OR REPLACE INTO list_items (list_id, anilist_id, position, data) VALUES (?, ?, ?, ?)',
+        'INSERT OR REPLACE INTO list_items (list_id, item_key, position, data) VALUES (?, ?, ?, ?)',
       );
-      items.forEach((it, i) => ins.run(listId, it.anilistId, i, JSON.stringify(it)));
+      items.forEach((it, i) => ins.run(listId, it.key, i, JSON.stringify(it)));
     }
     db.prepare('UPDATE lists SET last_refresh = ?, last_error = ? WHERE id = ?').run(
       now(),
@@ -167,7 +185,7 @@ export function getListItems(listId) {
     .all(listId)
     .map((r) => {
       const item = JSON.parse(r.data);
-      item.excluded = excluded.has(item.anilistId);
+      item.excluded = excluded.has(item.key);
       return item;
     });
 }
@@ -177,22 +195,36 @@ export function getListItems(listId) {
 export function getExclusionIds(listId) {
   return new Set(
     db
-      .prepare('SELECT anilist_id FROM exclusions WHERE list_id = ?')
+      .prepare('SELECT item_key FROM exclusions WHERE list_id = ?')
       .all(listId)
-      .map((r) => r.anilist_id),
+      .map((r) => r.item_key),
   );
 }
 
 export const listExclusions = (listId) =>
-  db.prepare('SELECT anilist_id, title FROM exclusions WHERE list_id = ? ORDER BY title').all(listId);
+  db.prepare('SELECT item_key, title FROM exclusions WHERE list_id = ? ORDER BY title').all(listId);
 
-export const addExclusion = (listId, anilistId, title) =>
+export const addExclusion = (listId, key, title) =>
   db
-    .prepare('INSERT OR REPLACE INTO exclusions (list_id, anilist_id, title) VALUES (?, ?, ?)')
-    .run(listId, anilistId, title ?? null);
+    .prepare('INSERT OR REPLACE INTO exclusions (list_id, item_key, title) VALUES (?, ?, ?)')
+    .run(listId, key, title ?? null);
 
-export const removeExclusion = (listId, anilistId) =>
-  db.prepare('DELETE FROM exclusions WHERE list_id = ? AND anilist_id = ?').run(listId, anilistId);
+export const removeExclusion = (listId, key) =>
+  db.prepare('DELETE FROM exclusions WHERE list_id = ? AND item_key = ?').run(listId, key);
+
+// ---------- TMDB TV id cache ----------
+
+export const getTmdbTvIds = (tmdbId) =>
+  db.prepare('SELECT * FROM tmdb_tv_ids WHERE tmdb_id = ?').get(tmdbId) || null;
+
+export const saveTmdbTvIds = (tmdbId, tvdbId, imdbId) =>
+  db
+    .prepare(
+      `INSERT INTO tmdb_tv_ids (tmdb_id, tvdb_id, imdb_id, fetched_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(tmdb_id) DO UPDATE SET tvdb_id = excluded.tvdb_id, imdb_id = excluded.imdb_id,
+         fetched_at = excluded.fetched_at`,
+    )
+    .run(tmdbId, tvdbId ?? null, imdbId ?? null, now());
 
 // ---------- overrides ----------
 
