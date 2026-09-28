@@ -108,6 +108,19 @@ const DATE_MODES = {
   range: 'A range of years',
   lastYears: 'In the last … years',
 };
+const LANG_CHOICES = [
+  ['en', 'English'], ['ko', 'Korean'], ['ja', 'Japanese'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'],
+  ['it', 'Italian'], ['hi', 'Hindi'], ['zh', 'Chinese'], ['pt', 'Portuguese'], ['sv', 'Swedish'], ['da', 'Danish'],
+  ['no', 'Norwegian'], ['tr', 'Turkish'],
+];
+const NOTIFIER_TYPES = {
+  discord: { label: 'Discord', fields: [['webhookUrl', 'Webhook URL', 'https://discord.com/api/webhooks/…', true]] },
+  telegram: { label: 'Telegram', fields: [['botToken', 'Bot token', '123456:ABC…', true], ['chatId', 'Chat ID', '-1001234567890']] },
+  ntfy: { label: 'ntfy', fields: [['server', 'Server', 'https://ntfy.sh'], ['topic', 'Topic', 'courarr'], ['token', 'Access token (optional)', '', true]] },
+  gotify: { label: 'Gotify', fields: [['server', 'Server URL', 'http://192.168.1.10:8070'], ['token', 'App token', '', true]] },
+  webhook: { label: 'Webhook (JSON)', fields: [['url', 'URL', 'http://…']] },
+};
+const SECRET_MASK = '••••••••';
 const REGIONS = ['US', 'GB', 'CA', 'AU', 'IE', 'NZ', 'DE', 'FR', 'ES', 'IT', 'NL', 'SE', 'NO', 'DK', 'FI', 'BR', 'MX', 'IN', 'JP', 'KR'];
 
 const MATCH = {
@@ -164,6 +177,13 @@ const TEMPLATES = [
     target: 'radarr',
     desc: 'Out on streaming/rental in the last 60 days, rated 6.5+.',
     filters: { date: { mode: 'lastDays', days: 60 }, releaseType: 'digital', minRating: 6.5, minVotes: 100, limit: 40 },
+  },
+  {
+    name: 'New on my streaming services',
+    source: 'tmdb',
+    target: 'sonarr',
+    desc: 'Series that just arrived on the services you pick — in your languages.',
+    filters: { collection: 'arrivals', arrivalDays: 14, minVotes: 20, limit: 30 },
   },
 ];
 
@@ -292,6 +312,9 @@ function describe(l) {
   if (f.minRuntime > 0 || f.maxRuntime > 0) parts.push(`${f.minRuntime || 0}–${f.maxRuntime || '∞'} min`);
   if (f.maxSeasons > 0) parts.push(`≤ ${f.maxSeasons} seasons`);
   if (f.keepDays > 0) parts.push(`kept ${f.keepDays}d`);
+  if (f.dripMax > 0) parts.push(`${f.dripMax} new per refresh`);
+  const sc = [f.minImdb > 0 && `IMDb ≥ ${f.minImdb}`, f.minRt > 0 && `RT ≥ ${f.minRt}%`, f.minMetacritic > 0 && `MC ≥ ${f.minMetacritic}`].filter(Boolean);
+  if (sc.length) parts.push(sc.join(', '));
   if (l.source === 'tmdb') {
     const n = f.genresInclude.length + f.genresExclude.length + f.keywordsInclude.length + f.keywordsExclude.length;
     if (f.providers.length) parts.push(`${f.providers.length} streaming service${f.providers.length > 1 ? 's' : ''}`);
@@ -413,6 +436,12 @@ function listCard(l) {
 
 // ---------- editor ----------
 
+/** New TV & movie lists start with the original languages chosen in Settings. */
+function withDefaultLanguages(source, filters) {
+  if (source === 'tmdb' && !filters.languages?.length) filters.languages = [...(state.settings?.defaultLanguages || [])];
+  return filters;
+}
+
 async function viewEditor(id, params, token) {
   view.innerHTML = loadingBlock('Loading…');
   const [meta] = await Promise.all([ensureMeta(), state.settings ? null : loadSettings()]);
@@ -440,7 +469,7 @@ async function viewEditor(id, params, token) {
       slug: '',
       source,
       target,
-      filters: { ...structuredClone(meta.defaults[source][target]), ...structuredClone(tpl?.filters || {}) },
+      filters: withDefaultLanguages(source, { ...structuredClone(meta.defaults[source][target]), ...structuredClone(tpl?.filters || {}) }),
       enabled: true,
     };
   }
@@ -605,7 +634,7 @@ async function viewEditor(id, params, token) {
     if ((b.dataset.target && b.dataset.target !== ed.draft.target) || (b.dataset.source && b.dataset.source !== ed.draft.source)) {
       if (b.dataset.target) ed.draft.target = b.dataset.target;
       if (b.dataset.source) ed.draft.source = b.dataset.source;
-      ed.draft.filters = structuredClone(meta.defaults[ed.draft.source][ed.draft.target]);
+      ed.draft.filters = withDefaultLanguages(ed.draft.source, structuredClone(meta.defaults[ed.draft.source][ed.draft.target]));
       ed.items = null;
       ed.mode = 'none';
       await loadTmeta();
@@ -950,8 +979,9 @@ function sectionCounts(d) {
     length:
       (n(f.minRuntime) || n(f.maxRuntime) ? 1 : 0) + (n(f.minEpisodes) || n(f.maxEpisodes) ? 1 : 0) +
       (n(f.minSeasons) || n(f.maxSeasons) ? 1 : 0) + (f.maxCertification ? 1 : 0) + (f.upcomingEpisode ? 1 : 0) +
-      (n(f.minRating) || n(f.minVotes) || n(f.minScore) || n(f.minPopularity) ? 1 : 0),
-    output: n(f.keepDays) ? 1 : 0,
+      (n(f.minRating) || n(f.minVotes) || n(f.minScore) || n(f.minPopularity) ? 1 : 0) +
+      (n(f.minImdb) || n(f.minRt) || n(f.minMetacritic) ? 1 : 0),
+    output: (n(f.keepDays) ? 1 : 0) + (n(f.dripMax) ? 1 : 0),
   };
 }
 
@@ -1092,6 +1122,42 @@ function certField(ed, certs) {
           : ''
       }
     </div>`;
+}
+
+function scoresFields(ed) {
+  const f = ed.draft.filters;
+  const has = state.settings?.omdbApiKeySet;
+  return `
+    <div class="field">
+      <span class="label">Critic & audience scores <span class="label-note">— via OMDb</span></span>
+      ${
+        has
+          ? ''
+          : '<span class="hint">Add a free OMDb key in <a href="#/settings">Settings</a> to use these (and to see scores on every title).</span>'
+      }
+      <div class="row">
+        <input class="input" type="number" min="0" max="10" step="0.1" data-f="filters.minImdb" value="${n(f.minImdb) ? esc(f.minImdb) : ''}" placeholder="IMDb ≥" title="Minimum IMDb rating (0–10)" />
+        <input class="input" type="number" min="0" max="100" data-f="filters.minRt" value="${n(f.minRt) ? esc(f.minRt) : ''}" placeholder="RT % ≥" title="Minimum Rotten Tomatoes critics score" />
+        <input class="input" type="number" min="0" max="100" data-f="filters.minMetacritic" value="${n(f.minMetacritic) ? esc(f.minMetacritic) : ''}" placeholder="Metacritic ≥" title="Minimum Metascore" />
+      </div>
+      ${
+        n(f.minImdb) || n(f.minRt) || n(f.minMetacritic)
+          ? `<label class="check"><input type="checkbox" data-f="filters.keepUnscored"${f.keepUnscored !== false ? ' checked' : ''} />
+              <span><b>Keep titles without that score</b><span class="hint">New releases and most TV often have no Rotten Tomatoes or Metacritic score yet.</span></span></label>`
+          : ''
+      }
+    </div>`;
+}
+
+function outputExtras(f) {
+  return `
+    <div class="field">
+      <label for="ed-drip">Drip-feed</label>
+      <div class="row"><span class="muted" style="flex:none">At most</span><input class="input" id="ed-drip" type="number" min="0" max="500" data-f="filters.dripMax" value="${esc(f.dripMax || 0)}" /><span class="muted" style="flex:none">new titles per refresh</span></div>
+      <span class="hint">0 = no limit. The rest wait in a queue, best-ranked first. Titles you already have don’t count.</span>
+    </div>
+    <label class="check"><input type="checkbox" data-f="filters.notify"${f.notify !== false ? ' checked' : ''} />
+      <span><b>Notify me about new titles</b><span class="hint">Uses the notifications set up in Settings.</span></span></label>`;
 }
 
 function keepDaysField(f) {
@@ -1241,6 +1307,7 @@ function animeFormHtml(ed) {
     ${rangeRow(tv ? 'Episode length' : 'Runtime', 'filters.minRuntime', 'filters.maxRuntime', f, 'minRuntime', 'maxRuntime', 'minutes')}
     ${tv ? rangeRow('Episodes', 'filters.minEpisodes', 'filters.maxEpisodes', f, 'minEpisodes', 'maxEpisodes') : ''}
     <span class="hint">Titles whose length isn’t announced yet are kept.</span>
+    ${scoresFields(ed)}
     ${certField(ed, certs)}
     <div class="row">
       <div class="field">
@@ -1267,7 +1334,8 @@ function animeFormHtml(ed) {
         <input class="input" id="ed-limit" type="number" min="1" max="500" data-f="filters.limit" value="${esc(f.limit)}" />
       </div>
     </div>
-    ${keepDaysField(f)}`;
+    ${keepDaysField(f)}
+    ${outputExtras(f)}`;
 
   return `
     ${typeSection(d)}
@@ -1290,7 +1358,8 @@ function tmdbFormHtml(ed) {
   const year = new Date().getFullYear();
   const m = ed.tmeta;
   const trending = f.collection === 'trending';
-  const byPeople = tv && f.people.length > 0;
+  const arrivalsMode = f.collection === 'arrivals';
+  const byPeople = tv && f.people.length > 0 && !arrivalsMode;
   const region = f.region || state.settings?.tmdbRegion || 'US';
   const dateModes = Object.entries(DATE_MODES).filter(([k]) => tv || k !== 'airing');
 
@@ -1309,7 +1378,13 @@ function tmdbFormHtml(ed) {
   const when = `
     <div class="field">
       <span class="label">Source</span>
-      ${segHtml('filters.collection', f.collection, [['discover', 'Discover (all filters)'], ['trending', 'Trending this week']], true)}
+      ${segHtml('filters.collection', f.collection, [['discover', 'Discover'], ['trending', 'Trending'], ['arrivals', 'New on my services']], true)}
+      ${
+        arrivalsMode
+          ? `<div class="row"><span class="muted" style="flex:none">Arrived in the last</span><input class="input" type="number" min="1" max="90" data-f="filters.arrivalDays" value="${esc(f.arrivalDays || 14)}" /><span class="muted" style="flex:none">days</span></div>
+            <span class="hint">Courarr records what’s on the services you pick (under <i>Where to watch</i>) at every refresh and lists what newly appeared. Tracking starts when you save.</span>`
+          : ''
+      }
       ${trending || byPeople ? `<span class="hint">${trending ? 'Trending' : 'With people chosen, a person’s credits'} can’t use streaming, network, company or keyword filters.</span>` : ''}
     </div>
     <div class="field">
@@ -1379,6 +1454,11 @@ function tmdbFormHtml(ed) {
       <div class="chips">${m.countries.map((c) => chipHtml(f.countries, 'countries', c.code, c.name)).join('')}</div>
     </div>
     ${
+      (f.providers.length || arrivalsMode) && !f.languages.length
+        ? '<div class="notice">Streaming catalogues are full of titles in other languages (e.g. French or Korean originals on Netflix). Pick an <b>original language</b> above to keep them out.</div>'
+        : ''
+    }
+    ${
       trending || byPeople
         ? ''
         : `<div class="field">
@@ -1427,6 +1507,7 @@ function tmdbFormHtml(ed) {
             <span><b>Has an upcoming episode</b><span class="hint">Only shows with a next episode scheduled.</span></span></label>`
         : ''
     }
+    ${scoresFields(ed)}
     ${certField(ed, m.certifications)}
     <div class="row">
       <div class="field">
@@ -1453,7 +1534,8 @@ function tmdbFormHtml(ed) {
         <input class="input" id="ed-limit" type="number" min="1" max="500" data-f="filters.limit" value="${esc(f.limit)}" />
       </div>
     </div>
-    ${keepDaysField(f)}`;
+    ${keepDaysField(f)}
+    ${outputExtras(f)}`;
 
   return `
     ${typeSection(d)}
@@ -1469,7 +1551,7 @@ function tmdbFormHtml(ed) {
 
 // --- results ---
 
-const inFeed = (i) => i.externalId && !i.excluded;
+const inFeed = (i) => i.externalId && !i.excluded && !i.ignored && !i.queued;
 
 function resultsHtml(ed) {
   const { target, source } = ed.draft;
@@ -1484,11 +1566,25 @@ function resultsHtml(ed) {
     feed: items.filter(inFeed).length,
     unmatched: items.filter((i) => !i.externalId).length,
     excluded: items.filter((i) => i.excluded).length,
+    queued: items.filter((i) => i.queued && !i.excluded && !i.ignored).length,
+    ignored: items.filter((i) => i.ignored).length,
   };
   const matchable = source === 'anilist' || target === 'sonarr';
-  const tabs = [['all', 'All'], ['feed', 'In feed'], ...(matchable ? [['unmatched', 'Unmatched']] : []), ['excluded', 'Excluded']];
+  const tabs = [
+    ['all', 'All'],
+    ['feed', 'In feed'],
+    ...(counts.queued ? [['queued', 'Queued']] : []),
+    ...(matchable ? [['unmatched', 'Unmatched']] : []),
+    ...(counts.ignored ? [['ignored', 'Ignored']] : []),
+    ['excluded', 'Excluded'],
+  ];
   const shown = items.filter((i) =>
-    ed.tab === 'feed' ? inFeed(i) : ed.tab === 'unmatched' ? !i.externalId : ed.tab === 'excluded' ? i.excluded : true,
+    ed.tab === 'feed' ? inFeed(i)
+      : ed.tab === 'unmatched' ? !i.externalId
+        : ed.tab === 'excluded' ? i.excluded
+          : ed.tab === 'queued' ? i.queued && !i.excluded && !i.ignored
+            : ed.tab === 'ignored' ? i.ignored
+              : true,
   );
   const lib = items.filter((i) => i.inLibrary).length;
   const sub =
@@ -1516,6 +1612,16 @@ function resultsHtml(ed) {
     </div>
     ${ed.warnings.map((w) => `<div class="notice">${esc(w)}</div>`).join('')}
     ${
+      counts.queued
+        ? `<div class="notice info">${counts.queued} title${counts.queued > 1 ? 's are' : ' is'} queued by drip-feed — ${ed.saved?.filters?.dripMax || ed.draft.filters.dripMax} more go to ${ARR[target]} each refresh.</div>`
+        : ''
+    }
+    ${
+      counts.ignored
+        ? `<div class="notice info">${counts.ignored} title${counts.ignored > 1 ? 's are' : ' is'} ignored (Maintainerr collections or ${ARR[target]}’s import list exclusions) and won’t be sent.</div>`
+        : ''
+    }
+    ${
       counts.unmatched && source === 'anilist'
         ? `<div class="notice info">${counts.unmatched} title${counts.unmatched > 1 ? 's have' : ' has'} no ${target === 'sonarr' ? 'TVDB' : 'TMDB'} ID yet. New shows usually get mapped within a few days; the daily refresh picks them up. You can also set an ID by hand with the # button.</div>`
         : counts.unmatched
@@ -1527,6 +1633,14 @@ function resultsHtml(ed) {
       ${source === 'anilist' ? '<span><i style="background:var(--err)"></i>No match</span>' : ''}
     </div>
     ${shown.length ? `<div class="grid">${shown.map((it) => itemHtml(it, items.indexOf(it), ed)).join('')}</div>` : '<div class="empty"><p>Nothing here.</p></div>'}`;
+}
+
+function scoreText(sc) {
+  return [
+    sc.imdb != null ? `<span title="IMDb rating">IMDb <b>${sc.imdb}</b></span>` : '',
+    sc.rt != null ? `<span title="Rotten Tomatoes critics">RT <b>${sc.rt}%</b></span>` : '',
+    sc.metacritic != null ? `<span title="Metascore">MC <b>${sc.metacritic}</b></span>` : '',
+  ].filter(Boolean).join('');
 }
 
 function keptUntil(it, ed) {
@@ -1585,12 +1699,16 @@ function itemHtml(it, idx, ed) {
           ${it.inLibrary ? '<span class="badge lib">In library</span>' : ''}
           ${it.sequel ? '<span class="badge">Sequel</span>' : ''}
           ${it.excluded ? '<span class="badge src-none">Excluded</span>' : ''}
+          ${it.ignored ? `<span class="badge src-none" title="${esc(it.ignored)}">Ignored</span>` : ''}
+          ${it.queued && !it.excluded && !it.ignored ? '<span class="badge kept" title="Waiting for a drip-feed slot">Queued</span>' : ''}
+          ${it.arrivedAt ? `<span class="badge lib" title="First seen on your services">New ${esc(new Date(it.arrivedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }))}</span>` : ''}
           ${it.retained ? `<span class="badge kept" title="Dropped out of the results; kept because of “Keep titles after they drop off”">Kept until ${esc(keptUntil(it, ed))}</span>` : ''}
         </div>
       </div>
       <div class="item-body">
         <div class="item-title" title="${esc(it.subtitle || it.title)}">${esc(it.title)}</div>
         <div class="item-meta">${esc(meta.filter(Boolean).join(' · '))}</div>
+        ${it.scores ? `<div class="item-scores">${scoreText(it.scores)}</div>` : ''}
         <div class="item-id">${ids}</div>
       </div>
     </div>`;
@@ -1888,7 +2006,62 @@ async function viewSettings() {
               </select>
               <span class="hint">Default region for streaming services and digital release dates. Lists can override it.</span>
             </div>
+            <div class="field">
+              <span class="label">Default original languages <span class="label-note">— for new TV & movie lists</span></span>
+              <div class="chips" id="def-langs">${LANG_CHOICES.map(([c, l]) => `<button type="button" class="chip${(s.defaultLanguages || []).includes(c) ? ' on' : ''}" data-lang="${c}">${l}</button>`).join('')}</div>
+              <span class="hint">Keeps foreign-language originals (e.g. French Netflix series) out unless a list asks for them.</span>
+            </div>
             ${testRow('tmdb')}
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div><h2>Scores (OMDb)</h2><p>IMDb, Rotten Tomatoes and Metacritic scores for filters and title cards. Free key (1,000 lookups a day): omdbapi.com/apikey.aspx</p></div></div>
+          <div class="panel-body">
+            <div class="field">
+              <label for="omdb-key">OMDb API key</label>
+              <input class="input mono" id="omdb-key" name="omdbApiKey" type="password" autocomplete="new-password" placeholder="${keyPlaceholder('omdb', 'e.g. a1b2c3d4')}" />
+              <span class="hint">Scores are cached for a week, so a handful of lists stays well inside the free limit.</span>
+            </div>
+            ${testRow('omdb')}
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div><h2>Maintainerr</h2><p>Skip titles your Maintainerr rules flag — e.g. abandoned series — in every list.</p></div></div>
+          <div class="panel-body">
+            <div class="field">
+              <label for="mt-url">URL</label>
+              <input class="input" id="mt-url" name="maintainerrUrl" value="${esc(s.maintainerrUrl)}" placeholder="http://192.168.1.10:6246" />
+            </div>
+            <div class="field">
+              <label for="mt-key">API key <span class="label-note">— only if your Maintainerr requires one</span></label>
+              <input class="input mono" id="mt-key" name="maintainerrApiKey" type="password" autocomplete="new-password" placeholder="${keyPlaceholder('maintainerr', 'Leave blank if Maintainerr has no API key')}" />
+            </div>
+            ${testRow('maintainerr')}
+            <div class="field">
+              <span class="label">Ignore titles in these collections</span>
+              <div id="mt-collections" class="mt-cols"><span class="hint">${s.maintainerrUrl ? 'Loading collections…' : 'Enter the URL and press Test to list your collections.'}</span></div>
+            </div>
+            <label class="check"><input type="checkbox" name="maintainerrStopNewSeasons"${s.maintainerrStopNewSeasons ? ' checked' : ''} />
+              <span><b>Stop new seasons of these shows in Sonarr</b><span class="hint">At each refresh, shows in the chosen collections stop monitoring new seasons, and seasons with nothing downloaded yet are unmonitored. Episodes you already have are untouched.</span></span></label>
+            <div class="row" style="flex:none">
+              <span class="hint" style="flex:1">Courarr re-reads the collections at every refresh, so a show you start watching again stops being ignored. Maintainerr’s own “add to import list exclusions” covers anything it deletes.</span>
+              <button type="button" class="btn btn-sm" id="mt-sync" style="flex:none">${icon('refresh')}Sync now</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div><h2>Notifications</h2><p>Hear about new titles going to Sonarr/Radarr, and about refresh problems.</p></div></div>
+          <div class="panel-body">
+            <label class="check"><input type="checkbox" name="notifyOnNew"${s.notifyOnNew ? ' checked' : ''} /><span><b>New titles added to a list’s feed</b><span class="hint">Per list, can be turned off in the list’s Ranking & output section.</span></span></label>
+            <label class="check"><input type="checkbox" name="notifyOnError"${s.notifyOnError ? ' checked' : ''} /><span><b>Refresh failures</b></span></label>
+            <div id="notifiers"></div>
+            <div class="row" style="flex:none">
+              <select class="select" id="nt-type" style="flex:none;width:180px">${Object.entries(NOTIFIER_TYPES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select>
+              <button type="button" class="btn btn-sm" id="nt-add" style="flex:none">${icon('plus')}Add</button>
+            </div>
           </div>
         </div>
 
@@ -1940,6 +2113,63 @@ async function viewSettings() {
     </form>`;
 
   const form = document.getElementById('settings-form');
+
+  // --- Maintainerr collections ---
+  let mtCollectionsLoaded = false;
+  const renderCollections = (cols) => {
+    const chosen = new Set(s.maintainerrCollections || []);
+    const box = form.querySelector('#mt-collections');
+    mtCollectionsLoaded = true;
+    box.innerHTML = cols.length
+      ? cols
+          .map(
+            (c) => `<label class="check${c.supported ? '' : ' disabled'}"><input type="checkbox" name="mtCollection" value="${c.id}"${chosen.has(c.id) && c.supported ? ' checked' : ''}${c.supported ? '' : ' disabled'} />
+              <span><b>${esc(c.title)}</b><span class="hint">${c.type} · ${c.count} title${c.count === 1 ? '' : 's'}${c.active ? '' : ' · inactive'}${c.supported ? '' : ' — season collections manage parts of a show, so they can’t be used here'}</span></span></label>`,
+          )
+          .join('')
+      : '<span class="hint">Maintainerr has no collections yet.</span>';
+  };
+  if (s.maintainerrUrl) {
+    api('/api/maintainerr/collections')
+      .then(renderCollections)
+      .catch((err) => {
+        form.querySelector('#mt-collections').innerHTML = `<span class="hint" style="color:var(--err)">${esc(err.message)}</span>`;
+      });
+  }
+
+  // --- notifiers ---
+  const notifiers = structuredClone(s.notifiers || []);
+  const renderNotifiers = () => {
+    form.querySelector('#notifiers').innerHTML = notifiers
+      .map((n, i) => {
+        const t = NOTIFIER_TYPES[n.type];
+        return `<div class="notifier" data-i="${i}">
+          <div class="row" style="flex:none">
+            <b style="flex:none;min-width:90px">${t.label}</b>
+            <input class="input" data-nf="name" value="${esc(n.name || '')}" placeholder="Name (optional)" />
+            <label class="check" style="flex:none;align-items:center"><input type="checkbox" data-nf="enabled"${n.enabled !== false ? ' checked' : ''} /><span>On</span></label>
+          </div>
+          ${t.fields
+            .map(([k, label, ph, secret]) => `<div class="field"><label>${label}</label><input class="input mono" data-nf="${k}" ${secret ? 'type="password" autocomplete="new-password"' : ''} value="${esc(n[k] || '')}" placeholder="${esc(ph || '')}" /></div>`)
+            .join('')}
+          <div class="row" style="flex:none">
+            <button type="button" class="btn btn-sm" data-ntest="${i}" style="flex:none">Send test</button>
+            <span class="test-result" id="nt-res-${i}"></span>
+            <button type="button" class="btn btn-sm btn-ghost btn-danger" data-nremove="${i}" style="flex:none;margin-left:auto">Remove</button>
+          </div>
+        </div>`;
+      })
+      .join('');
+  };
+  const readNotifiers = () =>
+    [...form.querySelectorAll('.notifier')].map((el) => {
+      const n = { ...notifiers[Number(el.dataset.i)] };
+      el.querySelectorAll('[data-nf]').forEach((inp) => (n[inp.dataset.nf] = inp.type === 'checkbox' ? inp.checked : inp.value));
+      return n;
+    });
+  renderNotifiers();
+
+  form.querySelector('#def-langs').addEventListener('click', (e) => e.target.closest('.chip')?.classList.toggle('on'));
   form.querySelector('#sched-preset').addEventListener('change', (e) => {
     const custom = e.target.value === 'custom';
     form.querySelector('#cron-field').classList.toggle('hidden', !custom);
@@ -1959,6 +2189,15 @@ async function viewSettings() {
       radarrApiKey: fd.get('radarrApiKey'),
       tmdbApiKey: fd.get('tmdbApiKey'),
       tmdbRegion: fd.get('tmdbRegion'),
+      defaultLanguages: [...form.querySelectorAll('#def-langs .chip.on')].map((c) => c.dataset.lang),
+      omdbApiKey: fd.get('omdbApiKey'),
+      maintainerrUrl: fd.get('maintainerrUrl'),
+      maintainerrApiKey: fd.get('maintainerrApiKey'),
+      maintainerrStopNewSeasons: fd.get('maintainerrStopNewSeasons') === 'on',
+      notifyOnNew: fd.get('notifyOnNew') === 'on',
+      notifyOnError: fd.get('notifyOnError') === 'on',
+      notifiers: readNotifiers(),
+      ...(mtCollectionsLoaded ? { maintainerrCollections: [...form.querySelectorAll('[name="mtCollection"]:checked:not(:disabled)')].map((c) => Number(c.value)) } : {}),
       arrLookupFallback: fd.get('arrLookupFallback') === 'on',
       triggerArrSync: fd.get('triggerArrSync') === 'on',
     };
@@ -1978,8 +2217,46 @@ async function viewSettings() {
   });
 
   form.addEventListener('click', async (e) => {
-    const b = e.target.closest('[data-test],[data-clear],#map-update');
+    const b = e.target.closest('[data-test],[data-clear],#map-update,#mt-sync,#nt-add,[data-ntest],[data-nremove]');
     if (!b) return;
+    if (b.id === 'nt-add') {
+      notifiers.splice(0, notifiers.length, ...readNotifiers());
+      notifiers.push({ type: form.querySelector('#nt-type').value, enabled: true });
+      renderNotifiers();
+      return;
+    }
+    if (b.dataset.nremove) {
+      notifiers.splice(0, notifiers.length, ...readNotifiers());
+      notifiers.splice(Number(b.dataset.nremove), 1);
+      renderNotifiers();
+      return;
+    }
+    if (b.dataset.ntest) {
+      const out = form.querySelector(`#nt-res-${b.dataset.ntest}`);
+      out.className = 'test-result';
+      out.textContent = 'Sending…';
+      try {
+        const r = await api('/api/notify/test', { method: 'POST', body: readNotifiers()[Number(b.dataset.ntest)] });
+        out.className = `test-result ${r.ok ? 'ok' : 'err'}`;
+        out.textContent = r.ok ? 'Sent — check your app' : `Failed: ${r.error}`;
+      } catch (err) {
+        out.className = 'test-result err';
+        out.textContent = err.message;
+      }
+      return;
+    }
+    if (b.id === 'mt-sync') {
+      b.disabled = true;
+      try {
+        await api('/api/settings', { method: 'PUT', body: collect() });
+        const r = await api('/api/maintainerr/sync', { method: 'POST' });
+        toast(r.length ? r.map((x) => `${x.collection}: ${x.titles}`).join(' · ') : 'No collections chosen');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      b.disabled = false;
+      return;
+    }
     if (b.dataset.test) {
       const kind = b.dataset.test;
       const out = form.querySelector(`#${kind}-test`);
@@ -1990,6 +2267,7 @@ async function viewSettings() {
         const r = await api('/api/settings/test', { method: 'POST', body: { kind, url: v[`${kind}Url`], apiKey: v[`${kind}ApiKey`] } });
         out.className = `test-result ${r.ok ? 'ok' : 'err'}`;
         out.textContent = r.ok ? `Connected to ${r.appName} ${r.version}` : `Failed: ${r.error}`;
+        if (r.ok && r.collections) renderCollections(r.collections);
       } catch (err) {
         out.className = 'test-result err';
         out.textContent = err.message;
@@ -2021,7 +2299,7 @@ async function viewSettings() {
 // ---------- activity ----------
 
 async function viewActivity() {
-  const [runs, overrides] = await Promise.all([api('/api/runs'), api('/api/overrides')]);
+  const [runs, overrides, ignored] = await Promise.all([api('/api/runs'), api('/api/overrides'), api('/api/ignored')]);
   view.innerHTML = `
     <div class="page-head"><div><h1>Activity</h1><p>Recent refreshes and the anime IDs you have set by hand.</p></div></div>
     <div class="panel" style="margin-bottom:16px">
@@ -2032,6 +2310,22 @@ async function viewActivity() {
               <tbody>${runs.map(runRow).join('')}</tbody>
             </table>`
           : '<div class="panel-body muted">No refreshes yet.</div>'
+      }
+    </div>
+    <div class="panel" style="margin-bottom:16px">
+      <div class="panel-head"><div><h2>Ignored titles</h2><p>From the Maintainerr collections chosen in Settings — never sent to Sonarr/Radarr.</p></div></div>
+      ${
+        ignored.length
+          ? `<table class="table" style="margin-top:8px">
+              <thead><tr><th>Title</th><th>Type</th><th>Why</th><th>IDs</th></tr></thead>
+              <tbody>${ignored
+                .map(
+                  (r) => `<tr><td>${esc(r.title)}</td><td class="muted">${r.kind}</td><td class="muted">${esc(r.reason)}</td>
+                    <td class="mono muted">${[r.tvdb_id && `tvdb ${r.tvdb_id}`, r.tmdb_id && `tmdb ${r.tmdb_id}`, r.imdb_id].filter(Boolean).join(' · ')}</td></tr>`,
+                )
+                .join('')}</tbody>
+            </table>`
+          : '<div class="panel-body muted">None — connect Maintainerr in Settings and pick collections to ignore.</div>'
       }
     </div>
     <div class="panel">
@@ -2071,13 +2365,16 @@ function runRow(r) {
     .map((l) =>
       l.error
         ? `<span><b>${esc(l.name)}</b> — <span style="color:var(--err)">${esc(l.error)}</span></span>`
-        : `<span><b>${esc(l.name)}</b> <span class="muted">${l.matched}/${l.total} matched · ${esc(l.label)}</span></span>`,
+        : `<span><b>${esc(l.name)}</b> <span class="muted">${l.matched}/${l.total} matched${l.added ? ` · ${l.added} new` : ''}${l.queued ? ` · ${l.queued} queued` : ''} · ${esc(l.label)}</span></span>`,
     )
     .join('');
   const extra = [
     ...(s.warnings || []).map((w) => `<span style="color:var(--warn)">${esc(w)}</span>`),
     s.error ? `<span style="color:var(--err)">${esc(s.error)}</span>` : '',
     s.synced?.length ? `<span class="faint">Asked ${s.synced.map((k) => ARR[k]).join(' & ')} to sync</span>` : '',
+    s.maintainerr?.length ? `<span class="faint">Maintainerr: ${s.maintainerr.map((m) => `${esc(m.collection)} (${m.titles})`).join(', ')}</span>` : '',
+    s.stoppedNewSeasons?.length ? `<span class="faint">Stopped new seasons: ${s.stoppedNewSeasons.map(esc).join(', ')}</span>` : '',
+    s.notified ? `<span class="faint">Sent ${s.notified} notification${s.notified > 1 ? 's' : ''}</span>` : '',
   ].join('');
   return `<tr>
     <td>${esc(fmtDate(r.started_at))}</td>

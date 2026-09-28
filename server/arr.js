@@ -101,6 +101,37 @@ export function arrClient(kind, settings) {
       return summariseImportList(saved);
     },
 
+    /** Titles on the app's own import-list exclusion list (Maintainerr adds deleted titles here). */
+    async importExclusions() {
+      if (isSonarr) return (await req('/importlistexclusion')).map((x) => ({ tvdbId: x.tvdbId, title: x.title }));
+      const rows = await req('/exclusions').catch(() => req('/importlistexclusion'));
+      return rows.map((x) => ({ tmdbId: x.tmdbId, title: x.movieTitle || x.title }));
+    },
+
+    /**
+     * Sonarr: stop new seasons of these shows being grabbed — new seasons won't be monitored
+     * and seasons with nothing downloaded yet are unmonitored. Returns the titles it changed.
+     */
+    async stopNewSeasons(tvdbIds) {
+      if (!isSonarr || !tvdbIds.size) return [];
+      const changed = [];
+      for (const s of await req('/series')) {
+        if (!tvdbIds.has(s.tvdbId)) continue;
+        let dirty = s.monitorNewItems !== 'none';
+        const seasons = s.seasons.map((se) => {
+          if (se.seasonNumber > 0 && se.monitored && (se.statistics?.episodeFileCount ?? 0) === 0) {
+            dirty = true;
+            return { ...se, monitored: false };
+          }
+          return se;
+        });
+        if (!dirty) continue;
+        await req(`/series/${s.id}`, { method: 'PUT', body: JSON.stringify({ ...s, monitorNewItems: 'none', seasons }) });
+        changed.push(s.title);
+      }
+      return changed;
+    },
+
     async deleteImportList(id) {
       try {
         await fetch(`${base}/api/v3/importlist/${id}`, {

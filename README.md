@@ -53,6 +53,24 @@ Every list kind has the same set of filters wherever the data supports it.
 
 Episode counts and runtimes that aren't announced yet never exclude a title, so new shows aren't dropped.
 
+Every list kind can also filter on **critic and audience scores**: minimum IMDb rating, Rotten Tomatoes %, and Metascore. The scores come from [OMDb](https://www.omdbapi.com), which needs a free key, and are cached for a week. Titles without that score yet are kept by default.
+
+### Smart extras
+
+- **New on my streaming services** (TV & movies): pick services and a region, and the list shows titles that newly *arrived* there in the last N days.
+  - Courarr records the catalogue at every refresh and lists what's new since the last one.
+  - Pair it with an **original language** so foreign-language originals don't flood in. Settings has a default language for new lists.
+- **Drip-feed**: at most N new titles per refresh, best-ranked first.
+  - The rest wait in a queue, so a new 50-title list doesn't make Sonarr/Radarr grab everything at once.
+  - Titles you already own don't count.
+- **Notifications**: Discord, Telegram, ntfy, Gotify or a JSON webhook.
+  - Sent when titles are added to a list's feed, and when a refresh fails.
+  - Can be switched off per list.
+- **Maintainerr**: connect it in Settings and pick collections, e.g. *Series - Abandonment*. Their titles are never sent by any list.
+  - Courarr re-reads the collections at every refresh, so a show you start watching again stops being ignored.
+  - Optionally, Courarr can also stop Sonarr monitoring **new seasons** of those shows. Seasons you already have stay as they are.
+- **Import-list exclusions respected**: titles on Sonarr's/Radarr's own exclusion list, which is where Maintainerr puts what it deletes, show as *Ignored* and stay out of feeds.
+
 ## Features
 
 - **Web UI**: build lists with filters and preview the results with posters before saving.
@@ -137,7 +155,7 @@ npm run dev     # http://localhost:6161, data in ./.config
 npm test
 ```
 
-You can develop without a TMDB key: run `node test/fixtures/mock-tmdb.mjs 7071`, start Courarr with `TMDB_BASE_URL=http://localhost:7071/3`, and use the API key `test`.
+You can develop without keys: `node test/fixtures/mock-tmdb.mjs 7071` then start Courarr with `TMDB_BASE_URL=http://localhost:7071/3` (API key `test`); `node test/fixtures/mock-services.mjs` stands in for Maintainerr (:7075) and a webhook receiver (:7099).
 
 Plain Node 24 (built-in `node:sqlite`), Express and a dependency-free front end. There's no build step.
 

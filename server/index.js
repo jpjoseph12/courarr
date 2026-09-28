@@ -14,6 +14,10 @@ import {
   MOVIE_STATUSES, SORTS as TMDB_SORTS, getTmdbMeta, networkName, resolveDateFilter, searchTmdbEntity, tmdbClient,
 } from './tmdb.js';
 import { nextRun, schedule, validateCron } from './scheduler.js';
+import { omdbClient, summariseOmdb } from './omdb.js';
+import { NOTIFIER_TYPES, SECRET_FIELDS, send as sendNotification } from './notify.js';
+import { maintainerrClient, syncMaintainerr } from './maintainerr.js';
+import { randomUUID } from 'node:crypto';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -66,6 +70,12 @@ function commonFilters(f) {
     maxEpisodes: clampInt(f.maxEpisodes, 0, 10000, 0),
     maxCertification: cert(f.maxCertification),
     keepDays: clampInt(f.keepDays, 0, 365, 0),
+    minImdb: Math.min(Math.max(Math.round((Number(f.minImdb) || 0) * 10) / 10, 0), 10),
+    minRt: clampInt(f.minRt, 0, 100, 0),
+    minMetacritic: clampInt(f.minMetacritic, 0, 100, 0),
+    keepUnscored: f.keepUnscored !== false,
+    dripMax: clampInt(f.dripMax, 0, 500, 0),
+    notify: f.notify !== false,
   };
 }
 
@@ -132,7 +142,8 @@ function sanitizeTmdbFilters(f, target) {
           movieStatuses: strList(f.movieStatuses, MOVIE_STATUSES),
           sequels: ['include', 'exclude', 'only'].includes(f.sequels) ? f.sequels : 'include',
         }),
-    collection: f.collection === 'trending' ? 'trending' : 'discover',
+    collection: ['trending', 'arrivals'].includes(f.collection) ? f.collection : 'discover',
+    arrivalDays: clampInt(f.arrivalDays, 1, 90, 14),
     date,
     releaseType: !tv && ['theatrical', 'digital'].includes(f.releaseType) ? f.releaseType : 'any',
     genresInclude: intList(f.genresInclude),
@@ -193,23 +204,61 @@ function listLabel(list, settings) {
   if (list.source === 'tmdb') {
     const kind = list.target === 'sonarr' ? 'tv' : 'movie';
     const { label } = resolveDateFilter(list.filters.date, kind, list.filters.releaseType);
+    if (list.filters.collection === 'arrivals') return `New on your services · last ${list.filters.arrivalDays || 14} days`;
     const prefix = list.target === 'sonarr' && list.filters.people?.length ? 'Credits' : list.filters.collection === 'trending' ? 'Trending this week' : null;
     return prefix ? `${prefix}${label === 'Any time' ? '' : ` · ${label}`}` : label;
   }
   return resolveSeasonFilter(list.filters.season, settings.seasonRolloverDays).label;
 }
 
+const KEYED = ['sonarr', 'radarr', 'tmdb', 'omdb', 'maintainerr'];
+const MASK = '••••••••';
+
 function publicSettings() {
   const s = store.getSettings();
-  return {
-    ...s,
-    sonarrApiKey: '',
-    radarrApiKey: '',
-    tmdbApiKey: '',
-    sonarrApiKeySet: !!s.sonarrApiKey,
-    radarrApiKeySet: !!s.radarrApiKey,
-    tmdbApiKeySet: !!s.tmdbApiKey,
-  };
+  const out = { ...s };
+  for (const k of KEYED) {
+    out[`${k}ApiKey`] = '';
+    out[`${k}ApiKeySet`] = !!s[`${k}ApiKey`];
+  }
+  // Webhook URLs and tokens are secrets: the browser only learns whether one is set.
+  out.notifiers = (s.notifiers || []).map((n) => {
+    const copy = { ...n };
+    for (const f of SECRET_FIELDS) if (f in copy) copy[f] = copy[f] ? MASK : '';
+    return copy;
+  });
+  return out;
+}
+
+const httpUrl = (v) => /^https?:\/\/[^\s]+$/i.test(v);
+
+/** Validates notifier settings; a masked or blank secret keeps the saved value. */
+function sanitizeNotifiers(list, saved = []) {
+  const prev = new Map(saved.map((n) => [n.id, n]));
+  if (!Array.isArray(list)) throw bad('notifiers must be a list');
+  return list.slice(0, 20).map((n) => {
+    const type = n?.type;
+    if (!NOTIFIER_TYPES[type]) throw bad(`Unknown notification type "${type}"`);
+    const old = prev.get(n.id) || {};
+    const out = {
+      id: /^[a-z0-9-]{4,40}$/i.test(n.id || '') ? n.id : randomUUID(),
+      type,
+      name: String(n.name || '').trim().slice(0, 60),
+      enabled: n.enabled !== false,
+    };
+    for (const f of NOTIFIER_TYPES[type].fields) {
+      let v = String(n[f] ?? '').trim();
+      if (SECRET_FIELDS.includes(f) && (v === MASK || v === '')) v = old[f] || '';
+      out[f] = v.slice(0, 500);
+    }
+    const label = NOTIFIER_TYPES[type].label;
+    if (type === 'discord' && !/^https:\/\/(\w+\.)?discord(app)?\.com\/api\/webhooks\//.test(out.webhookUrl)) throw bad(`${label}: paste the channel's webhook URL`);
+    if (type === 'telegram' && (!out.botToken || !out.chatId)) throw bad(`${label}: bot token and chat ID are required`);
+    if (type === 'ntfy' && (!out.topic || (out.server && !httpUrl(out.server)))) throw bad(`${label}: a topic (and a valid server URL, if set) is required`);
+    if (type === 'gotify' && (!httpUrl(out.server) || !out.token)) throw bad(`${label}: server URL and app token are required`);
+    if (type === 'webhook' && !httpUrl(out.url)) throw bad(`${label}: a valid http(s) URL is required`);
+    return out;
+  });
 }
 
 const idParam = (req) => {
@@ -338,8 +387,15 @@ app.get('/api/lists/:id', (req, res) => {
 
 app.put('/api/lists/:id', async (req, res) => {
   const id = idParam(req);
-  listOr404(id);
+  const before = listOr404(id);
   const list = store.updateList(id, validateList(req.body, id));
+  // A "new on my services" list compares against what it saw before; if its scope changed,
+  // start tracking afresh or every title in the new scope would look like an arrival.
+  const scope = (l) => {
+    const { limit, keepDays, dripMax, notify, arrivalDays, sort, ...rest } = l.filters;
+    return JSON.stringify([l.target, rest]);
+  };
+  if (list.filters.collection === 'arrivals' && scope(before) !== scope(list)) store.resetCatalogue(id);
   // Keep the linked Sonarr/Radarr import list's name and URL in step with renames.
   if (list.arr_list_id) {
     const client = arrClient(list.target, store.getSettings());
@@ -379,7 +435,8 @@ app.post('/api/preview', async (req, res) => {
   const source = SOURCES.includes(req.body.source) ? req.body.source : 'anilist';
   const filters = sanitizeFilters(source, req.body.filters, target);
   const ctx = await createContext();
-  const { items, label } = await buildItems(source, target, filters, ctx);
+  const listId = Number(req.body.listId) || null;
+  const { items, label } = await buildItems(source, target, filters, ctx, { listId, record: false });
   const excluded = req.body.listId ? store.getExclusionIds(Number(req.body.listId)) : new Set();
   for (const it of items) it.excluded = excluded.has(it.key);
   res.json({ items, label, warnings: [...ctx.warnings] });
@@ -502,9 +559,9 @@ app.put('/api/settings', (req, res) => {
   }
   if (b.seasonRolloverDays !== undefined) patch.seasonRolloverDays = clampInt(b.seasonRolloverDays, 0, 45, 14);
   if (b.feedBaseUrl !== undefined) patch.feedBaseUrl = String(b.feedBaseUrl).trim().replace(/\/+$/, '');
-  for (const kind of ['sonarr', 'radarr', 'tmdb']) {
+  for (const kind of KEYED) {
     const cap = kind[0].toUpperCase() + kind.slice(1);
-    if (kind !== 'tmdb' && b[`${kind}Url`] !== undefined) {
+    if (['sonarr', 'radarr', 'maintainerr'].includes(kind) && b[`${kind}Url`] !== undefined) {
       patch[`${kind}Url`] = String(b[`${kind}Url`]).trim().replace(/\/+$/, '');
     }
     // Blank means "keep the saved key"; the explicit clear flag removes it.
@@ -512,7 +569,14 @@ app.put('/api/settings', (req, res) => {
     if (b[`clear${cap}ApiKey`]) patch[`${kind}ApiKey`] = '';
   }
   if (b.tmdbRegion !== undefined && /^[A-Z]{2}$/.test(String(b.tmdbRegion))) patch.tmdbRegion = b.tmdbRegion;
-  for (const k of ['arrLookupFallback', 'triggerArrSync']) if (b[k] !== undefined) patch[k] = !!b[k];
+  for (const k of ['arrLookupFallback', 'triggerArrSync', 'notifyOnNew', 'notifyOnError', 'maintainerrStopNewSeasons']) {
+    if (b[k] !== undefined) patch[k] = !!b[k];
+  }
+  if (b.defaultLanguages !== undefined) {
+    patch.defaultLanguages = strList(b.defaultLanguages).map((c) => c.toLowerCase()).filter((c) => /^[a-z]{2}$/.test(c));
+  }
+  if (b.maintainerrCollections !== undefined) patch.maintainerrCollections = intList(b.maintainerrCollections);
+  if (b.notifiers !== undefined) patch.notifiers = sanitizeNotifiers(b.notifiers, store.getSettings().notifiers);
   if (['english', 'romaji'].includes(b.titleLanguage)) patch.titleLanguage = b.titleLanguage;
 
   const before = store.getSettings().schedule;
@@ -539,7 +603,30 @@ app.post('/api/settings/test', async (req, res) => {
       return res.json({ ok: false, error: causeOf(e) });
     }
   }
-  if (!['sonarr', 'radarr'].includes(kind)) throw bad('kind must be sonarr, radarr or tmdb');
+  if (kind === 'omdb') {
+    const client = omdbClient(req.body.apiKey || saved.omdbApiKey);
+    if (!client) throw bad('API key is required');
+    try {
+      const sc = summariseOmdb(await client.get('tt0111161'));
+      return res.json({ ok: true, appName: 'OMDb', version: `— The Shawshank Redemption: IMDb ${sc.imdb}, RT ${sc.rt}%` });
+    } catch (e) {
+      return res.json({ ok: false, error: causeOf(e) });
+    }
+  }
+  if (kind === 'maintainerr') {
+    const client = maintainerrClient({
+      maintainerrUrl: req.body.url ?? saved.maintainerrUrl,
+      maintainerrApiKey: req.body.apiKey || saved.maintainerrApiKey,
+    });
+    if (!client) throw bad('URL is required');
+    try {
+      const cols = await client.collections();
+      return res.json({ ok: true, appName: 'Maintainerr', version: `— ${cols.length} collections`, collections: cols });
+    } catch (e) {
+      return res.json({ ok: false, error: causeOf(e) });
+    }
+  }
+  if (!['sonarr', 'radarr'].includes(kind)) throw bad('kind must be sonarr, radarr, tmdb, omdb or maintainerr');
   const client = arrClient(kind, {
     [`${kind}Url`]: req.body.url ?? saved[`${kind}Url`],
     [`${kind}ApiKey`]: req.body.apiKey || saved[`${kind}ApiKey`],
@@ -548,6 +635,36 @@ app.post('/api/settings/test', async (req, res) => {
   try {
     const st = await client.status();
     res.json({ ok: true, appName: st.appName || kind, version: st.version });
+  } catch (e) {
+    res.json({ ok: false, error: causeOf(e) });
+  }
+});
+
+// ---------- Maintainerr ----------
+
+app.get('/api/maintainerr/collections', async (req, res) => {
+  const client = maintainerrClient(store.getSettings());
+  if (!client) throw bad('Connect Maintainerr in Settings first');
+  res.json(await client.collections());
+});
+
+app.post('/api/maintainerr/sync', async (_req, res) => {
+  const settings = store.getSettings();
+  const client = maintainerrClient(settings);
+  if (!client) throw bad('Connect Maintainerr in Settings first');
+  const synced = await syncMaintainerr(client, settings.maintainerrCollections);
+  res.json(synced.map(({ collection, titles }) => ({ collection, titles })));
+});
+
+app.get('/api/ignored', (_req, res) => res.json(store.listIgnored()));
+
+// ---------- notifications ----------
+
+app.post('/api/notify/test', async (req, res) => {
+  const [n] = sanitizeNotifiers([req.body], store.getSettings().notifiers);
+  try {
+    await sendNotification(n, { kind: 'test' });
+    res.json({ ok: true });
   } catch (e) {
     res.json({ ok: false, error: causeOf(e) });
   }

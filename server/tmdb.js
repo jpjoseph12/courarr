@@ -420,11 +420,18 @@ export async function certificationCheck(client, kind, f, region) {
 
 // ---------- search ----------
 
-export async function searchTmdb(client, kind, f, region) {
+/**
+ * Runs a list's search. Options:
+ *  - candidates: a ready-made, already-filtered list of results to use instead of discover
+ *    (e.g. new arrivals on a streaming service), with candidateLabel for the heading
+ *  - needImdb: fetch details for movies too, so IMDb ids are known (for score filters)
+ *  - acceptBatch(batch, details): async extra check per page, returns booleans
+ */
+export async function searchTmdb(client, kind, f, region, { candidates = null, candidateLabel = null, needImdb = false, acceptBatch = null } = {}) {
   const limit = Math.min(Math.max(Number(f.limit) || 50, 1), 500);
   const { params, label, range } = discoverParams(kind, f, region);
-  const trending = f.collection === 'trending';
-  const tvPeople = kind === 'tv' && (f.people || []).length > 0;
+  const trending = f.collection === 'trending' && !candidates;
+  const tvPeople = kind === 'tv' && (f.people || []).length > 0 && !candidates;
   // Candidates that bypass discover need the discover-only checks done here instead.
   const local = trending || tvPeople;
   const runtimeLocal = local && (f.minRuntime > 0 || f.maxRuntime > 0);
@@ -433,11 +440,11 @@ export async function searchTmdb(client, kind, f, region) {
     f.maxCertification && (kind === 'tv' || f.keepUnrated || local) ? await certificationCheck(client, kind, f, region) : null;
   // TV always needs details (TVDB id); movies only when a details-based filter is on.
   const withDetails =
-    kind === 'tv' || !!certOk || runtimeLocal || f.sequels !== 'include' || (f.movieStatuses || []).length > 0;
+    kind === 'tv' || needImdb || !!certOk || runtimeLocal || f.sequels !== 'include' || (f.movieStatuses || []).length > 0;
   const tvTypes = kind === 'tv' ? new Set(allowedTvTypes(f)) : null;
 
   // Candidate pages: discover, trending, or (TV) the chosen people's credits.
-  let creditPool = null;
+  let creditPool = candidates;
   if (tvPeople) {
     const seen = new Map();
     for (const p of f.people) for (const c of await personTvCredits(client, p.id)) if (!seen.has(c.id)) seen.set(c.id, c);
@@ -463,7 +470,7 @@ export async function searchTmdb(client, kind, f, region) {
     let batch = (data.results || []).filter((r) => {
       if (seen.has(r.id) || r.adult) return false;
       seen.add(r.id);
-      if ((trending || creditPool) && !passesLocalFilters(r, kind, f, range)) return false;
+      if ((trending || tvPeople) && !passesLocalFilters(r, kind, f, range)) return false;
       return !(f.excludeAnime && looksLikeAnime(r));
     });
     examined += batch.length;
@@ -502,18 +509,43 @@ export async function searchTmdb(client, kind, f, region) {
       batch = keep;
     }
 
+    if (acceptBatch && batch.length) {
+      const ok = await acceptBatch(batch, details);
+      batch = batch.filter((_, i) => ok[i]);
+    }
+
     for (const r of batch) {
       out.push(r);
       if (out.length >= limit) break;
     }
     if (page >= (data.total_pages || 1)) break;
   }
-  const prefix = creditPool ? 'Credits' : trending ? 'Trending this week' : null;
+  const prefix = candidates ? candidateLabel : tvPeople ? 'Credits' : trending ? 'Trending this week' : null;
   return {
     results: out,
     details,
     label: prefix ? `${prefix}${range ? ` · ${label}` : ''}` : label,
   };
+}
+
+// ---------- catalogue scan (new on my services) ----------
+
+const CATALOGUE_PAGES = 100; // 2,000 titles, most popular first
+
+/**
+ * Everything discover returns for the list's filters (providers, languages, genres…), used to
+ * spot titles that newly appeared. `truncated` means the catalogue was bigger than the scan.
+ */
+export async function scanCatalogue(client, kind, f, region) {
+  const { params } = discoverParams(kind, { ...f, sort: 'popularity' }, region);
+  const results = [];
+  let total = 1;
+  for (let page = 1; page <= Math.min(total, CATALOGUE_PAGES); page++) {
+    const data = await client.get(`/discover/${kind}`, { ...params, page });
+    total = data.total_pages || 1;
+    results.push(...(data.results || []).filter((r) => !r.adult && !(f.excludeAnime && looksLikeAnime(r))));
+  }
+  return { results, truncated: total > CATALOGUE_PAGES };
 }
 
 export const posterUrl = (p) => (p ? IMAGE_BASE + p : null);

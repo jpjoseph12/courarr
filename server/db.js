@@ -61,6 +61,36 @@ db.exec(`
     PRIMARY KEY (kind, tmdb_id)
   );
 
+  -- OMDb scores (IMDb / Rotten Tomatoes / Metacritic) by IMDb id; the free key allows 1000 calls a day.
+  CREATE TABLE IF NOT EXISTS omdb_cache (
+    imdb_id    TEXT PRIMARY KEY,
+    data       TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+  );
+
+  -- What a "new on my services" list has seen in the catalogue, to spot arrivals.
+  CREATE TABLE IF NOT EXISTS catalogue_seen (
+    list_id    INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+    tmdb_id    INTEGER NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    PRIMARY KEY (list_id, tmdb_id)
+  );
+
+  -- Titles every feed skips (e.g. from Maintainerr collections). Kept after they leave the
+  -- collection so a title Maintainerr deleted isn't re-added by a list.
+  CREATE TABLE IF NOT EXISTS ignored_titles (
+    kind       TEXT NOT NULL CHECK (kind IN ('show', 'movie')),
+    title      TEXT NOT NULL,
+    tvdb_id    INTEGER,
+    tmdb_id    INTEGER,
+    imdb_id    TEXT,
+    reason     TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    ref        TEXT PRIMARY KEY
+  );
+
   CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     trigger     TEXT NOT NULL,
@@ -88,6 +118,15 @@ export const SETTING_DEFAULTS = {
   titleLanguage: 'english',
   tmdbApiKey: '',
   tmdbRegion: 'US',
+  defaultLanguages: [],
+  omdbApiKey: '',
+  notifiers: [],
+  notifyOnNew: true,
+  notifyOnError: true,
+  maintainerrUrl: '',
+  maintainerrApiKey: '',
+  maintainerrCollections: [],
+  maintainerrStopNewSeasons: false,
 };
 
 export function getSettings() {
@@ -256,6 +295,87 @@ export function setOverride(anilistId, { tvdbId, tmdbId, title }) {
 
 export const deleteOverride = (anilistId) =>
   db.prepare('DELETE FROM overrides WHERE anilist_id = ?').run(anilistId);
+
+// ---------- OMDb cache ----------
+
+export function getOmdb(imdbId) {
+  const row = db.prepare('SELECT data, fetched_at FROM omdb_cache WHERE imdb_id = ?').get(imdbId);
+  return row ? { data: JSON.parse(row.data), fetched_at: row.fetched_at } : null;
+}
+
+export const saveOmdb = (imdbId, data) =>
+  db
+    .prepare(
+      `INSERT INTO omdb_cache (imdb_id, data, fetched_at) VALUES (?, ?, ?)
+       ON CONFLICT(imdb_id) DO UPDATE SET data = excluded.data, fetched_at = excluded.fetched_at`,
+    )
+    .run(imdbId, JSON.stringify(data), now());
+
+// ---------- catalogue tracking ----------
+
+/** Records the titles currently in a list's catalogue; returns { tmdbId: firstSeen } and the baseline. */
+export function recordCatalogue(listId, tmdbIds) {
+  const stamp = now();
+  const up = db.prepare(
+    `INSERT INTO catalogue_seen (list_id, tmdb_id, first_seen, last_seen) VALUES (?, ?, ?, ?)
+     ON CONFLICT(list_id, tmdb_id) DO UPDATE SET last_seen = excluded.last_seen`,
+  );
+  db.exec('BEGIN');
+  try {
+    for (const id of tmdbIds) up.run(listId, id, stamp, stamp);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  return catalogueState(listId);
+}
+
+export function catalogueState(listId) {
+  const rows = db.prepare('SELECT tmdb_id, first_seen FROM catalogue_seen WHERE list_id = ?').all(listId);
+  const firstSeen = new Map(rows.map((r) => [r.tmdb_id, r.first_seen]));
+  const baseline = rows.reduce((min, r) => (!min || r.first_seen < min ? r.first_seen : min), null);
+  return { firstSeen, baseline };
+}
+
+export const resetCatalogue = (listId) => db.prepare('DELETE FROM catalogue_seen WHERE list_id = ?').run(listId);
+
+// ---------- ignored titles ----------
+
+/** Swaps every row whose ref starts with `prefix` for `rows`, atomically. */
+export function replaceIgnored(prefix, rows) {
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM ignored_titles WHERE ref LIKE ?').run(`${prefix}%`);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  upsertIgnored(rows);
+}
+
+export function upsertIgnored(rows) {
+  const stamp = now();
+  const up = db.prepare(
+    `INSERT INTO ignored_titles (ref, kind, title, tvdb_id, tmdb_id, imdb_id, reason, first_seen, last_seen)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(ref) DO UPDATE SET title = excluded.title, tvdb_id = COALESCE(excluded.tvdb_id, ignored_titles.tvdb_id),
+       tmdb_id = COALESCE(excluded.tmdb_id, ignored_titles.tmdb_id), imdb_id = COALESCE(excluded.imdb_id, ignored_titles.imdb_id),
+       reason = excluded.reason, last_seen = excluded.last_seen`,
+  );
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) up.run(r.ref, r.kind, r.title, r.tvdbId ?? null, r.tmdbId ?? null, r.imdbId ?? null, r.reason, stamp, stamp);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+export const listIgnored = () => db.prepare('SELECT * FROM ignored_titles ORDER BY last_seen DESC, title').all();
+export const deleteIgnored = (ref) => db.prepare('DELETE FROM ignored_titles WHERE ref = ?').run(ref);
 
 // ---------- runs ----------
 
