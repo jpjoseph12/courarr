@@ -91,6 +91,13 @@ db.exec(`
     ref        TEXT PRIMARY KEY
   );
 
+  -- Web UI login sessions (only a hash of the cookie token is stored).
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     trigger     TEXT NOT NULL,
@@ -127,6 +134,12 @@ export const SETTING_DEFAULTS = {
   maintainerrApiKey: '',
   maintainerrCollections: [],
   maintainerrStopNewSeasons: false,
+  authUser: '',
+  authHash: '',
+  apiKey: '',
+  feedKey: '',
+  feedKeyRequired: false,
+  setupComplete: false,
 };
 
 export function getSettings() {
@@ -376,6 +389,17 @@ export function upsertIgnored(rows) {
 
 export const listIgnored = () => db.prepare('SELECT * FROM ignored_titles ORDER BY last_seen DESC, title').all();
 export const deleteIgnored = (ref) => db.prepare('DELETE FROM ignored_titles WHERE ref = ?').run(ref);
+
+// ---------- sessions ----------
+
+export function createSession(tokenHash, expiresAt) {
+  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now());
+  db.prepare('INSERT INTO sessions (token_hash, created_at, expires_at) VALUES (?, ?, ?)').run(tokenHash, now(), expiresAt);
+}
+export const getSession = (tokenHash) => db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(tokenHash) || null;
+export const deleteSession = (tokenHash) => db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+export const deleteAllSessions = () => db.prepare('DELETE FROM sessions').run();
+export const deleteOtherSessions = (keepHash) => db.prepare('DELETE FROM sessions WHERE token_hash != ?').run(keepHash);
 
 // ---------- runs ----------
 

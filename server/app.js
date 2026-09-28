@@ -18,6 +18,7 @@ import { omdbClient, summariseOmdb } from './omdb.js';
 import { NOTIFIER_TYPES, SECRET_FIELDS, send as sendNotification } from './notify.js';
 import { maintainerrClient, syncMaintainerr } from './maintainerr.js';
 import { randomUUID } from 'node:crypto';
+import * as auth from './auth.js';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -216,7 +217,7 @@ const MASK = '••••••••';
 
 function publicSettings() {
   const s = store.getSettings();
-  const out = { ...s };
+  const { authHash, ...out } = s;
   for (const k of KEYED) {
     out[`${k}ApiKey`] = '';
     out[`${k}ApiKeySet`] = !!s[`${k}ApiKey`];
@@ -284,8 +285,26 @@ const tmdbOr400 = () => {
 
 /** Where Sonarr/Radarr should fetch a feed from. */
 function feedUrl(req, slug) {
-  const base = store.getSettings().feedBaseUrl || `${req.protocol}://${req.get('host')}`;
-  return `${base}/feed/${slug}`;
+  const s = store.getSettings();
+  const base = s.feedBaseUrl || `${req.protocol}://${req.get('host')}`;
+  return `${base}/feed/${slug}${s.feedKeyRequired ? `?key=${s.feedKey}` : ''}`;
+}
+
+/** Points a list's linked Sonarr/Radarr import list at its current name and feed URL. */
+async function syncArrList(req, list) {
+  if (!list.arr_list_id) return;
+  const client = arrClient(list.target, store.getSettings());
+  try {
+    const current = client && (await client.getImportList(list.arr_list_id));
+    if (current) await client.upsertImportList(list.arr_list_id, { ...current, name: arrListName(list), url: feedUrl(req, list.slug) });
+  } catch (e) {
+    log(`Could not update ${list.target} import list: ${e.message}`);
+  }
+}
+
+/** After the feed key or its requirement changes, every linked import list needs the new URL. */
+async function syncAllArrLists(req) {
+  for (const list of store.listLists()) await syncArrList(req, list);
 }
 const arrListName = (list) => `Courarr – ${list.name}`;
 
@@ -297,6 +316,115 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, version: VERSION }));
+
+// ---------- login ----------
+
+const OPEN_API = new Set(['/api/health', '/api/auth/status', '/api/auth/login', '/api/auth/setup', '/api/auth/logout']);
+const sessionToken = (req) => auth.parseCookies(req.headers.cookie)[auth.COOKIE];
+
+/** Who is calling: a logged-in browser session, or a script with the API key. */
+function caller(req) {
+  const token = sessionToken(req);
+  if (token && auth.sessionValid(token)) return { via: 'session', token };
+  const key = req.get('x-api-key') || req.query.apikey;
+  if (key && auth.apiKeyValid(key)) return { via: 'apikey' };
+  return null;
+}
+
+app.use('/api', (req, res, next) => {
+  if (OPEN_API.has(req.originalUrl.split('?')[0])) return next();
+  const who = caller(req);
+  if (!who) {
+    const configured = auth.isConfigured();
+    return res.status(401).json({ error: configured ? 'Log in to continue' : 'Create an account first', code: configured ? 'login' : 'setup' });
+  }
+  // A browser session can only change things with the header Courarr's own UI sends: a
+  // cross-site page can't add it without a CORS preflight, which this server never allows.
+  if (who.via === 'session' && !['GET', 'HEAD'].includes(req.method) && req.get('x-courarr') !== '1') {
+    return res.status(403).json({ error: 'Request blocked: missing X-Courarr header' });
+  }
+  req.caller = who;
+  next();
+});
+
+app.get('/api/auth/status', (req, res) => {
+  const s = store.getSettings();
+  const who = caller(req);
+  res.json({
+    configured: !!s.authHash,
+    authenticated: !!who,
+    user: who ? s.authUser : null,
+    setupComplete: !!s.setupComplete,
+    version: VERSION,
+  });
+});
+
+const startSession = (req, res, remember) => {
+  const { token, maxAge } = auth.createSession(remember);
+  res.set('Set-Cookie', auth.sessionCookie(req, token, maxAge));
+};
+
+app.post('/api/auth/setup', (req, res) => {
+  if (auth.isConfigured()) throw new HttpError(409, 'An account already exists — log in instead');
+  const { username, password } = req.body || {};
+  const problem = auth.usernameProblem(username) || auth.passwordProblem(password);
+  if (problem) throw bad(problem);
+  auth.createAccount(username, password);
+  auth.ensureKeys();
+  log(`Account "${username.trim()}" created`);
+  startSession(req, res, true);
+  res.status(201).json({ ok: true, user: username.trim() });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const ip = req.ip || req.socket.remoteAddress;
+  if (auth.loginBlocked(ip)) throw new HttpError(429, 'Too many failed attempts — wait 10 minutes and try again');
+  const { username, password, remember } = req.body || {};
+  if (!auth.isConfigured()) throw new HttpError(409, 'No account yet — create one first');
+  if (!auth.checkLogin(username || '', password || '')) {
+    auth.recordFailure(ip);
+    log(`Failed login for "${String(username || '').slice(0, 40)}" from ${ip}`);
+    throw new HttpError(401, 'Wrong username or password');
+  }
+  auth.clearFailures(ip);
+  startSession(req, res, !!remember);
+  res.json({ ok: true, user: store.getSettings().authUser });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  auth.endSession(sessionToken(req));
+  res.set('Set-Cookie', auth.sessionCookie(req, '', 0));
+  res.status(204).end();
+});
+
+app.put('/api/auth/account', (req, res) => {
+  const { current, username, password } = req.body || {};
+  const s = store.getSettings();
+  if (!auth.verifyPassword(current || '', s.authHash)) throw bad('Your current password is wrong');
+  const patch = {};
+  if (username !== undefined && username.trim() !== s.authUser) {
+    const problem = auth.usernameProblem(username);
+    if (problem) throw bad(problem);
+    patch.authUser = username.trim();
+  }
+  if (password) {
+    const problem = auth.passwordProblem(password);
+    if (problem) throw bad(problem);
+    patch.authHash = auth.hashPassword(password);
+  }
+  store.saveSettings(patch);
+  // Signing everyone else out is the point of changing a password.
+  if (patch.authHash) auth.endOtherSessions(req.caller.token);
+  res.json({ ok: true, user: store.getSettings().authUser });
+});
+
+app.post('/api/auth/keys/:which', async (req, res) => {
+  const which = req.params.which;
+  if (!['api', 'feed'].includes(which)) throw new HttpError(404, 'Unknown key');
+  store.saveSettings({ [`${which}Key`]: auth.newKey() });
+  if (which === 'feed' && store.getSettings().feedKeyRequired) await syncAllArrLists(req);
+  res.json(publicSettings());
+});
 
 app.get('/api/status', (_req, res) => {
   const s = store.getSettings();
@@ -398,17 +526,7 @@ app.put('/api/lists/:id', async (req, res) => {
   };
   if (list.filters.collection === 'arrivals' && scope(before) !== scope(list)) store.resetCatalogue(id);
   // Keep the linked Sonarr/Radarr import list's name and URL in step with renames.
-  if (list.arr_list_id) {
-    const client = arrClient(list.target, store.getSettings());
-    try {
-      const current = client && (await client.getImportList(list.arr_list_id));
-      if (current) {
-        await client.upsertImportList(list.arr_list_id, { ...current, name: arrListName(list), url: feedUrl(req, list.slug) });
-      }
-    } catch (e) {
-      log(`Could not update ${list.target} import list: ${e.message}`);
-    }
-  }
+  await syncArrList(req, list);
   res.json(list);
 });
 
@@ -549,7 +667,7 @@ app.delete('/api/overrides/:anilistId', (req, res) => {
 
 app.get('/api/settings', (_req, res) => res.json(publicSettings()));
 
-app.put('/api/settings', (req, res) => {
+app.put('/api/settings', async (req, res) => {
   const b = req.body;
   const patch = {};
   if (b.schedule !== undefined) {
@@ -580,9 +698,15 @@ app.put('/api/settings', (req, res) => {
   if (b.notifiers !== undefined) patch.notifiers = sanitizeNotifiers(b.notifiers, store.getSettings().notifiers);
   if (['english', 'romaji'].includes(b.titleLanguage)) patch.titleLanguage = b.titleLanguage;
 
+  for (const k of ['setupComplete', 'feedKeyRequired']) if (b[k] !== undefined) patch[k] = !!b[k];
+  const feedChanged =
+    (patch.feedKeyRequired !== undefined && patch.feedKeyRequired !== store.getSettings().feedKeyRequired) ||
+    (patch.feedBaseUrl !== undefined && patch.feedBaseUrl !== store.getSettings().feedBaseUrl);
+
   const before = store.getSettings().schedule;
   const saved = store.saveSettings(patch);
   if (saved.schedule !== before) schedule(saved.schedule);
+  if (feedChanged) await syncAllArrLists(req);
   res.json(publicSettings());
 });
 
@@ -680,6 +804,9 @@ app.get('/api/runs', (_req, res) => res.json(store.listRuns(50)));
 
 // The URL Sonarr/Radarr poll. `/feed/<slug>` and `/feed/<slug>.json` both work.
 app.get('/feed/:slug', (req, res) => {
+  if (store.getSettings().feedKeyRequired && !auth.feedKeyValid(req.query.key || req.get('x-api-key'))) {
+    return res.status(401).json({ error: 'This feed needs its key (?key=…) — copy the feed URL from Courarr again' });
+  }
   const list = store.getListBySlug(req.params.slug.replace(/\.json$/i, ''));
   if (!list) return res.status(404).json({ error: 'List not found' });
   res.set('Cache-Control', 'no-store').json(feedFor(list, store.getListItems(list.id)));

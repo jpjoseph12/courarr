@@ -9,11 +9,17 @@ const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 async function api(path, opts = {}) {
-  const init = { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } };
+  // X-Courarr: the server only accepts changes from a logged-in browser that sends it.
+  const init = { ...opts, headers: { 'Content-Type': 'application/json', 'X-Courarr': '1', ...(opts.headers || {}) } };
   if (opts.body !== undefined && typeof opts.body !== 'string') init.body = JSON.stringify(opts.body);
   const res = await fetch(path, init);
   if (res.status === 204) return null;
   const data = await res.json().catch(() => null);
+  if (res.status === 401 && data?.code && !path.startsWith('/api/auth/')) {
+    clearTimeout(pollTimer);
+    if (data.code === 'setup') viewCreateAccount();
+    else viewLogin('Your session ended — please log in again.');
+  }
   if (!res.ok) throw new Error(data?.error || `Request failed (HTTP ${res.status})`);
   return data;
 }
@@ -66,7 +72,7 @@ async function copyText(text) {
     document.execCommand('copy');
     ta.remove();
   }
-  toast('Feed URL copied');
+  toast('Copied');
 }
 
 const debounce = (fn, ms) => {
@@ -208,7 +214,8 @@ async function loadTmdbMeta(kind, region) {
   return state.tmdbMeta[key];
 }
 
-const feedUrl = (slug) => `${state.settings?.feedBaseUrl || location.origin}/feed/${slug}`;
+const feedUrl = (slug) =>
+  `${state.settings?.feedBaseUrl || location.origin}/feed/${slug}${state.settings?.feedKeyRequired ? `?key=${state.settings.feedKey}` : ''}`;
 const arrConnected = (target) => !!(state.settings?.[`${target}Url`] && state.settings?.[`${target}ApiKeySet`]);
 const tmdbKind = (target) => (target === 'sonarr' ? 'tv' : 'movie');
 
@@ -273,6 +280,7 @@ const routes = [
   [/^#\/lists\/new(?:\?(.*))?$/, (m, t) => viewEditor(null, new URLSearchParams(m[1] || ''), t)],
   [/^#\/lists\/(\d+)(?:\?(.*))?$/, (m, t) => viewEditor(Number(m[1]), new URLSearchParams(m[2] || ''), t)],
   [/^#\/settings$/, () => viewSettings()],
+  [/^#\/setup(?:\/(\w+))?$/, (m) => viewSetup(m[1] || 'arr')],
   [/^#\/activity$/, () => viewActivity()],
 ];
 
@@ -282,6 +290,7 @@ async function route() {
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === section));
   const token = ++renderToken;
   view.onclick = null;
+  bare(false);
   for (const [re, fn] of routes) {
     const m = hash.match(re);
     if (!m) continue;
@@ -363,8 +372,11 @@ async function viewLists() {
       </div>
     </div>`;
 
+  const finish = state.settings?.setupComplete
+    ? ''
+    : '<div class="notice info">Setup isn’t finished — <a href="#/setup/arr">connect Sonarr, Radarr and TMDB</a> to unlock one-click adding and TV & movie lists.</div>';
   if (!lists.length) {
-    view.innerHTML = `${head}
+    view.innerHTML = `${head}${finish}
       <div class="empty">
         <h2>No lists yet</h2>
         <p>Each list is a saved search — anime from AniList, or regular TV & movies from TMDB.<br>
@@ -372,7 +384,7 @@ async function viewLists() {
         ${templatesHtml()}
       </div>`;
   } else {
-    view.innerHTML = `${head}<div class="cards">${lists.map(listCard).join('')}</div>`;
+    view.innerHTML = `${head}${finish}<div class="cards">${lists.map(listCard).join('')}</div>`;
   }
 
   view.onclick = async (e) => {
@@ -1991,6 +2003,31 @@ async function viewSettings() {
           </div>
         </div>
 
+        <div class="panel" id="security">
+          <div class="panel-head"><div><h2>Login & security</h2><p>Signed in as <b>${esc(s.authUser)}</b>.</p></div></div>
+          <div class="panel-body">
+            <div class="field"><label for="acc-user">Username</label><input class="input" id="acc-user" value="${esc(s.authUser)}" autocomplete="username" /></div>
+            <div class="row">
+              <div class="field"><label for="acc-new">New password</label><input class="input" id="acc-new" type="password" autocomplete="new-password" placeholder="leave blank to keep" /></div>
+              <div class="field"><label for="acc-new2">Confirm</label><input class="input" id="acc-new2" type="password" autocomplete="new-password" /></div>
+            </div>
+            <div class="field"><label for="acc-cur">Current password</label><input class="input" id="acc-cur" type="password" autocomplete="current-password" placeholder="needed to change either" /></div>
+            <div class="row" style="flex:none"><button type="button" class="btn btn-sm" id="acc-save" style="flex:none">Update login</button><span class="hint">Changing the password signs out every other browser.</span></div>
+            <div class="field">
+              <span class="label">API key <span class="label-note">— for scripts, e.g. <code>curl -X POST -H "X-Api-Key: …" …/api/refresh</code></span></span>
+              <div class="feed"><code id="api-key">${esc(s.apiKey)}</code>
+                <button type="button" class="btn btn-ghost btn-sm btn-icon" data-copy-text="${esc(s.apiKey)}" title="Copy">${icon('copy')}</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-regen="api">New key</button></div>
+            </div>
+            <label class="check"><input type="checkbox" name="feedKeyRequired"${s.feedKeyRequired ? ' checked' : ''} />
+              <span><b>Protect feed URLs with a key</b><span class="hint">Feeds must be readable by Sonarr/Radarr without logging in. With this on, each feed URL carries a secret <code>?key=…</code>. Import lists Courarr created are updated automatically; update any you added by hand.</span></span></label>
+            <div class="row" style="flex:none">
+              ${s.feedKeyRequired ? '<button type="button" class="btn btn-sm btn-ghost" data-regen="feed" style="flex:none">New feed key</button>' : ''}
+              <a class="btn btn-sm btn-ghost" href="#/setup/arr" style="flex:none">Run the setup guide again</a>
+            </div>
+          </div>
+        </div>
+
         <div class="panel">
           <div class="panel-head"><span class="pill normal">TMDB</span><div><h2>TMDB</h2><p>Needed for TV & movie lists. Free: themoviedb.org → Settings → API.</p></div></div>
           <div class="panel-body">
@@ -2196,6 +2233,7 @@ async function viewSettings() {
       maintainerrStopNewSeasons: fd.get('maintainerrStopNewSeasons') === 'on',
       notifyOnNew: fd.get('notifyOnNew') === 'on',
       notifyOnError: fd.get('notifyOnError') === 'on',
+      feedKeyRequired: fd.get('feedKeyRequired') === 'on',
       notifiers: readNotifiers(),
       ...(mtCollectionsLoaded ? { maintainerrCollections: [...form.querySelectorAll('[name="mtCollection"]:checked:not(:disabled)')].map((c) => Number(c.value)) } : {}),
       arrLookupFallback: fd.get('arrLookupFallback') === 'on',
@@ -2217,8 +2255,32 @@ async function viewSettings() {
   });
 
   form.addEventListener('click', async (e) => {
-    const b = e.target.closest('[data-test],[data-clear],#map-update,#mt-sync,#nt-add,[data-ntest],[data-nremove]');
+    const b = e.target.closest('[data-test],[data-clear],#map-update,#mt-sync,#nt-add,[data-ntest],[data-nremove],#acc-save,[data-regen],[data-copy-text]');
     if (!b) return;
+    if (b.dataset.copyText) {
+      await copyText(b.dataset.copyText);
+      return;
+    }
+    if (b.dataset.regen) {
+      const what = b.dataset.regen === 'api' ? 'API key' : 'feed key';
+      if (!confirm(`Make a new ${what}? Anything using the old one stops working${b.dataset.regen === 'feed' ? ' (Courarr updates the import lists it created)' : ''}.`)) return;
+      state.settings = await api(`/api/auth/keys/${b.dataset.regen}`, { method: 'POST' });
+      toast(`New ${what} created`);
+      viewSettings();
+      return;
+    }
+    if (b.id === 'acc-save') {
+      const v = (id) => form.querySelector(id).value;
+      if (v('#acc-new') !== v('#acc-new2')) return toast('The new passwords don’t match', true);
+      try {
+        await api('/api/auth/account', { method: 'PUT', body: { current: v('#acc-cur'), username: v('#acc-user'), password: v('#acc-new') || undefined } });
+        toast('Login updated');
+        viewSettings();
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
     if (b.id === 'nt-add') {
       notifiers.splice(0, notifiers.length, ...readNotifiers());
       notifiers.push({ type: form.querySelector('#nt-type').value, enabled: true });
@@ -2384,8 +2446,331 @@ function runRow(r) {
   </tr>`;
 }
 
+// ---------- login & first-run setup ----------
+
+/** Full-page screens (login, create account) hide the app's top bar. */
+function bare(on) {
+  document.body.classList.toggle('bare', on);
+}
+
+function authShell(inner) {
+  return `
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <div class="auth-brand"><img src="logo.svg" alt="" width="44" height="44" /><span>Courarr</span></div>
+        ${inner}
+      </div>
+      <p class="auth-foot">Seasonal anime, TV & movie lists for Sonarr and Radarr</p>
+    </div>`;
+}
+
+function viewLogin(message) {
+  bare(true);
+  view.innerHTML = authShell(`
+    <h1>Log in</h1>
+    <form id="login-form" class="auth-form" autocomplete="on">
+      <div class="field"><label for="lg-user">Username</label><input class="input" id="lg-user" name="username" autocomplete="username" required autofocus /></div>
+      <div class="field"><label for="lg-pass">Password</label><input class="input" id="lg-pass" name="password" type="password" autocomplete="current-password" required /></div>
+      <label class="check"><input type="checkbox" name="remember" checked /><span><b>Keep me logged in</b><span class="hint">For 30 days on this browser.</span></span></label>
+      <div class="auth-error" id="lg-error">${esc(message || '')}</div>
+      <button class="btn btn-primary auth-submit" type="submit">Log in</button>
+      <p class="hint auth-help">Forgot it? Restart the container once with <code>COURARR_RESET_AUTH=true</code> to set a new login.</p>
+    </form>`);
+  const form = view.querySelector('#login-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const btn = form.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      await api('/api/auth/login', { method: 'POST', body: { username: fd.get('username'), password: fd.get('password'), remember: fd.get('remember') === 'on' } });
+      await startApp();
+    } catch (err) {
+      form.querySelector('#lg-error').textContent = err.message;
+      btn.disabled = false;
+    }
+  });
+}
+
+function viewCreateAccount() {
+  bare(true);
+  view.innerHTML = authShell(`
+    <div class="steps-mini"><span class="on">1</span> Account <i></i><span>2</span> Connections <i></i><span>3</span> Done</div>
+    <h1>Welcome to Courarr</h1>
+    <p class="muted">First, create the login for this Courarr. Anyone who can reach it on your network will need it.</p>
+    <form id="acct-form" class="auth-form" autocomplete="on">
+      <div class="field"><label for="ac-user">Username</label><input class="input" id="ac-user" name="username" autocomplete="username" required minlength="2" maxlength="40" autofocus /></div>
+      <div class="field"><label for="ac-pass">Password</label><input class="input" id="ac-pass" name="password" type="password" autocomplete="new-password" required minlength="8" />
+        <span class="hint">At least 8 characters.</span></div>
+      <div class="field"><label for="ac-pass2">Confirm password</label><input class="input" id="ac-pass2" name="password2" type="password" autocomplete="new-password" required minlength="8" /></div>
+      <div class="auth-error" id="ac-error"></div>
+      <button class="btn btn-primary auth-submit" type="submit">Create account</button>
+    </form>`);
+  const form = view.querySelector('#acct-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const err = form.querySelector('#ac-error');
+    if (fd.get('password') !== fd.get('password2')) {
+      err.textContent = 'The passwords don’t match';
+      return;
+    }
+    try {
+      await api('/api/auth/setup', { method: 'POST', body: { username: fd.get('username'), password: fd.get('password') } });
+      await startApp();
+    } catch (e2) {
+      err.textContent = e2.message;
+    }
+  });
+}
+
+async function logout() {
+  await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  clearTimeout(pollTimer);
+  state.settings = null;
+  document.getElementById('logout').hidden = true;
+  // replaceState: changing the hash directly would trigger a route to the (now locked) lists.
+  history.replaceState(null, '', '#/');
+  viewLogin('You have been logged out.');
+}
+
+// --- the setup guide ---
+
+const SETUP_STEPS = [
+  { id: 'arr', title: 'Sonarr & Radarr' },
+  { id: 'tmdb', title: 'TV & movie data' },
+  { id: 'omdb', title: 'Scores' },
+  { id: 'feeds', title: 'Feed address' },
+  { id: 'done', title: 'Ready' },
+];
+
+function setupProgress(i) {
+  return `<ol class="setup-steps">${SETUP_STEPS.map(
+    (s, j) => `<li class="${j < i ? 'done' : j === i ? 'on' : ''}"><span>${j < i ? '✓' : j + 1}</span>${esc(s.title)}</li>`,
+  ).join('')}</ol>`;
+}
+
+async function viewSetup(stepId) {
+  bare(false);
+  await loadSettings();
+  const s = state.settings;
+  const i = Math.max(0, SETUP_STEPS.findIndex((x) => x.id === stepId));
+  const step = SETUP_STEPS[i].id;
+  const go = (j) => (location.hash = `#/setup/${SETUP_STEPS[j].id}`);
+  const origin = location.origin;
+
+  const keyField = (kind, label, placeholder, help) => `
+    <div class="field">
+      <label for="su-${kind}-key">${label}</label>
+      <input class="input mono" id="su-${kind}-key" data-key="${kind}" type="password" autocomplete="new-password"
+        placeholder="${s[`${kind}ApiKeySet`] ? 'Saved — leave blank to keep' : esc(placeholder)}" />
+      ${help ? `<span class="hint">${help}</span>` : ''}
+    </div>`;
+  const testLine = (kind) => `<div class="row" style="flex:none"><button type="button" class="btn btn-sm" data-sutest="${kind}" style="flex:none">Test</button><span class="test-result" id="su-${kind}-res">${
+    s[`${kind}ApiKeySet`] ? '<span class="faint">Saved</span>' : ''
+  }</span></div>`;
+
+  let body;
+  if (step === 'arr') {
+    body = `
+      <h2>Connect Sonarr and Radarr</h2>
+      <p class="muted">Optional, but recommended. With a connection, Courarr can add each list to Sonarr/Radarr for you with the right series type, show what you already have, and find IDs for brand-new shows.
+      You’ll find the API key in each app under <b>Settings → General → Security</b>.</p>
+      <p class="hint">Use your server’s address (e.g. <code>http://192.168.1.10:8989</code>), not <code>localhost</code> — inside Docker, “localhost” is Courarr itself.</p>
+      <div class="setup-grid">
+        ${['sonarr', 'radarr']
+          .map(
+            (k) => `<div class="setup-box">
+              <div class="row" style="flex:none;gap:8px"><span class="pill ${k}" style="flex:none">${k}</span><b style="flex:none">${ARR[k]}</b></div>
+              <div class="field"><label for="su-${k}-url">URL</label><input class="input" id="su-${k}-url" data-url="${k}" value="${esc(s[`${k}Url`])}" placeholder="http://192.168.1.10:${k === 'sonarr' ? 8989 : 7878}" /></div>
+              ${keyField(k, 'API key', `${ARR[k]} → Settings → General → API Key`)}
+              ${testLine(k)}
+            </div>`,
+          )
+          .join('')}
+      </div>`;
+  } else if (step === 'tmdb') {
+    body = `
+      <h2>TV & movie data (TMDB)</h2>
+      <p class="muted"><b>Anime lists work without this.</b> For regular TV and movie lists — and age ratings on anime — Courarr needs a free key from The Movie Database.</p>
+      <ol class="how">
+        <li>Sign up at <a href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">themoviedb.org</a> (free).</li>
+        <li>Open <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">Settings → API</a> and request a <b>Developer</b> key (any app name and URL will do).</li>
+        <li>Copy either the <b>API Key</b> or the long <b>API Read Access Token</b> and paste it here.</li>
+      </ol>
+      ${keyField('tmdb', 'TMDB API key or Read Access Token', 'Paste the key or token')}
+      ${testLine('tmdb')}
+      <div class="row">
+        <div class="field">
+          <label for="su-region">Your region</label>
+          <select class="select" id="su-region">${REGIONS.map((r) => `<option value="${r}"${s.tmdbRegion === r ? ' selected' : ''}>${r}</option>`).join('')}</select>
+          <span class="hint">For streaming services, age ratings and digital release dates.</span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Original languages you watch</span>
+        <div class="chips" id="su-langs">${LANG_CHOICES.map(([c, l]) => `<button type="button" class="chip${(s.defaultLanguages || []).includes(c) ? ' on' : ''}" data-lang="${c}">${l}</button>`).join('')}</div>
+        <span class="hint">New TV & movie lists start with these, so foreign-language originals (e.g. French Netflix series) stay out unless you ask for them.</span>
+      </div>`;
+  } else if (step === 'omdb') {
+    body = `
+      <h2>Critic & audience scores (OMDb)</h2>
+      <p class="muted">Optional. Lets lists filter on <b>IMDb rating, Rotten Tomatoes and Metacritic</b>, and shows those scores on every title.</p>
+      <ol class="how">
+        <li>Get a free key at <a href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noopener">omdbapi.com/apikey.aspx</a> (choose <b>FREE</b>, 1,000 lookups a day).</li>
+        <li>Click the activation link OMDb emails you, then paste the key here.</li>
+      </ol>
+      ${keyField('omdb', 'OMDb API key', 'e.g. a1b2c3d4')}
+      ${testLine('omdb')}`;
+  } else if (step === 'feeds') {
+    body = `
+      <h2>How Sonarr & Radarr reach Courarr</h2>
+      <p class="muted">Each list is a feed URL that Sonarr/Radarr read. Enter the address <b>they</b> can reach Courarr at.</p>
+      <div class="field">
+        <label for="su-feedbase">Feed base URL</label>
+        <input class="input" id="su-feedbase" value="${esc(s.feedBaseUrl)}" placeholder="${esc(origin)}" />
+        <span class="hint">Blank uses this page’s address (<code>${esc(origin)}</code>) — fine when Sonarr/Radarr run on the same network.
+        If they share a Docker network with Courarr, use its container name, e.g. <code>http://courarr:6161</code>.</span>
+      </div>
+      <label class="check"><input type="checkbox" id="su-feedkey"${s.feedKeyRequired ? ' checked' : ''} />
+        <span><b>Protect feed URLs with a key</b><span class="hint">Feeds are readable without logging in (Sonarr/Radarr can’t log in). With this on, each feed URL carries a secret <code>?key=…</code>; lists added from Courarr get it automatically.</span></span></label>`;
+  } else {
+    const have = (k) => !!s[`${k}ApiKeySet`];
+    const item = (on, text, off) => `<li class="${on ? 'ok' : ''}"><span>${on ? '✓' : '–'}</span>${on ? text : off}</li>`;
+    body = `
+      <h2>You’re set up</h2>
+      <ul class="setup-summary">
+        ${item(true, '<b>Anime lists</b> from AniList — no key needed')}
+        ${item(have('tmdb'), '<b>TV & movie lists</b> from TMDB', 'TV & movie lists need a TMDB key — add it any time in Settings')}
+        ${item(have('sonarr') || have('radarr'), `<b>One-click “Add to ${[have('sonarr') && 'Sonarr', have('radarr') && 'Radarr'].filter(Boolean).join(' / ')}”</b> and library badges`, 'Without a Sonarr/Radarr connection you copy each feed URL into them yourself')}
+        ${item(have('omdb'), '<b>Critic & audience score</b> filters', 'Score filters need an OMDb key')}
+      </ul>
+      <p class="muted">Also in <a href="#/settings">Settings</a>: the refresh schedule (daily at 3 AM), Maintainerr, notifications, and your API key for scripts.</p>
+      <div class="templates" style="margin-top:14px">
+        ${TEMPLATES.filter((t) => t.source === 'anilist' || have('tmdb'))
+          .slice(0, 4)
+          .map((t) => `<div class="template" data-template="${TEMPLATES.indexOf(t)}" role="button" tabindex="0"><span class="row" style="flex:none;gap:6px"><span class="pill ${t.source === 'anilist' ? 'anime' : 'normal'}" style="flex:none">${SOURCE_NAMES[t.source]}</span><span class="pill ${t.target}" style="flex:none">${t.target}</span></span><b>${esc(t.name)}</b><span>${esc(t.desc)}</span></div>`)
+          .join('')}
+      </div>`;
+  }
+
+  view.innerHTML = `
+    <div class="setup">
+      <div class="page-head"><div><h1>Set up Courarr</h1><p>A few connections and you’re ready — every step can be changed later in Settings.</p></div></div>
+      ${setupProgress(i)}
+      <div class="panel setup-panel"><div class="panel-body">${body}</div>
+        <div class="setup-foot">
+          ${i > 0 ? '<button type="button" class="btn btn-ghost" data-su="back">Back</button>' : ''}
+          <span class="spacer"></span>
+          ${step === 'done' ? '<button type="button" class="btn btn-primary" data-su="finish">Go to my lists</button>' : `
+            <button type="button" class="btn btn-ghost" data-su="skip">Skip</button>
+            <button type="button" class="btn btn-primary" data-su="next">Save & continue</button>`}
+        </div>
+      </div>
+    </div>`;
+
+  // Collect only what this step shows; blank keys keep the saved ones.
+  const collect = () => {
+    const out = {};
+    view.querySelectorAll('[data-url]').forEach((el) => (out[`${el.dataset.url}Url`] = el.value.trim()));
+    view.querySelectorAll('[data-key]').forEach((el) => el.value.trim() && (out[`${el.dataset.key}ApiKey`] = el.value.trim()));
+    if (step === 'tmdb') {
+      out.tmdbRegion = view.querySelector('#su-region').value;
+      out.defaultLanguages = [...view.querySelectorAll('#su-langs .chip.on')].map((c) => c.dataset.lang);
+    }
+    if (step === 'feeds') {
+      out.feedBaseUrl = view.querySelector('#su-feedbase').value.trim();
+      out.feedKeyRequired = view.querySelector('#su-feedkey').checked;
+    }
+    return out;
+  };
+  const test = async (kind) => {
+    const out = view.querySelector(`#su-${kind}-res`);
+    out.className = 'test-result';
+    out.textContent = 'Testing…';
+    const v = collect();
+    try {
+      const r = await api('/api/settings/test', { method: 'POST', body: { kind, url: v[`${kind}Url`], apiKey: v[`${kind}ApiKey`] } });
+      out.className = `test-result ${r.ok ? 'ok' : 'err'}`;
+      out.textContent = r.ok ? `Connected to ${r.appName} ${r.version}` : `Failed: ${r.error}`;
+      return r.ok;
+    } catch (e) {
+      out.className = 'test-result err';
+      out.textContent = e.message;
+      return false;
+    }
+  };
+  // Kinds on this step the user actually filled in (a URL or a new key).
+  const filled = () => {
+    const v = collect();
+    return ['sonarr', 'radarr', 'tmdb', 'omdb'].filter((k) => view.querySelector(`[data-key="${k}"]`) && (v[`${k}ApiKey`] || (v[`${k}Url`] && v[`${k}Url`] !== s[`${k}Url`])));
+  };
+
+  view.querySelector('#su-langs')?.addEventListener('click', (e) => e.target.closest('.chip')?.classList.toggle('on'));
+  let forced = false;
+  view.onclick = async (e) => {
+    const t = e.target.closest('[data-sutest],[data-su],[data-template]');
+    if (!t) return;
+    if (t.dataset.sutest) return test(t.dataset.sutest);
+    if (t.dataset.template) {
+      await api('/api/settings', { method: 'PUT', body: { setupComplete: true } });
+      location.hash = `#/lists/new?template=${t.dataset.template}`;
+      return;
+    }
+    const action = t.dataset.su;
+    if (action === 'back') return go(i - 1);
+    if (action === 'skip') return go(i + 1);
+    if (action === 'finish') {
+      await api('/api/settings', { method: 'PUT', body: { setupComplete: true } });
+      await loadSettings();
+      location.hash = '#/';
+      return;
+    }
+    // Save & continue: test anything newly entered first, but let people go on regardless.
+    t.disabled = true;
+    const failed = [];
+    for (const k of filled()) if (!(await test(k))) failed.push(ARR[k] || k.toUpperCase());
+    if (failed.length && !forced) {
+      forced = true;
+      t.disabled = false;
+      t.textContent = 'Save anyway';
+      toast(`${failed.join(' & ')} didn’t connect — check the details, or save anyway and fix it later`, true);
+      return;
+    }
+    try {
+      await api('/api/settings', { method: 'PUT', body: collect() });
+      go(i + 1);
+    } catch (err) {
+      toast(err.message, true);
+      t.disabled = false;
+    }
+  };
+}
+
+/** Called once the browser is logged in: loads settings and shows the app (or the setup guide). */
+async function startApp() {
+  bare(false);
+  await loadSettings();
+  document.getElementById('logout').hidden = false;
+  pollStatus();
+  if (!state.settings.setupComplete && !location.hash.startsWith('#/setup')) location.hash = '#/setup/arr';
+  else route();
+}
+
+async function boot() {
+  let st;
+  try {
+    st = await (await fetch('/api/auth/status')).json();
+  } catch {
+    view.innerHTML = '<div class="empty"><h2>Can’t reach Courarr</h2><p>Is the container running?</p></div>';
+    return;
+  }
+  if (!st.configured) return viewCreateAccount();
+  if (!st.authenticated) return viewLogin();
+  await startApp();
+}
+
 // ---------- boot ----------
 
-loadSettings().catch(() => {});
-pollStatus();
-route();
+document.getElementById('logout').addEventListener('click', logout);
+boot();
