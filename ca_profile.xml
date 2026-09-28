@@ -1,0 +1,11 @@
+<CommunityApplications>
+  <Profile>
+**Courarr** builds auto-updating lists for **Sonarr** and **Radarr**: seasonal anime from AniList, and regular TV &amp; movies from TMDB, each sent to Sonarr with the right series type (Anime, Standard or Daily).
+
+Filter by season or year range, genres, streaming service, network, people, studios, runtime, age rating and critic scores; let Courarr add the import lists to Sonarr/Radarr for you; drip-feed big lists; skip titles your Maintainerr rules flag; and get notified about new titles.
+
+Setup, networking and troubleshooting: see the [README](https://github.com/jpjoseph12/courarr#readme). Questions and bugs: [GitHub issues](https://github.com/jpjoseph12/courarr/issues).
+  </Profile>
+  <Icon>https://raw.githubusercontent.com/jpjoseph12/courarr/main/public/icon.png</Icon>
+  <WebPage>https://github.com/jpjoseph12/courarr</WebPage>
+</CommunityApplications>
