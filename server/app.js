@@ -311,8 +311,16 @@ const arrListName = (list) => `Courarr – ${list.name}`;
 // ---------- app ----------
 
 /** The Express app: API, feeds and the web UI. index.js starts it; tests import it directly. */
+// Changes every time the server starts (version + start time). Pages compare it with the build
+// they were loaded from, so a tab left open across an update reloads itself.
+export const BUILD = `${VERSION}-${Date.now().toString(36)}`;
+
 export const app = express();
 app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.set('X-Courarr-Build', BUILD);
+  next();
+});
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, version: VERSION }));
@@ -341,7 +349,10 @@ app.use('/api', (req, res, next) => {
   // A browser session can only change things with the header Courarr's own UI sends: a
   // cross-site page can't add it without a CORS preflight, which this server never allows.
   if (who.via === 'session' && !['GET', 'HEAD'].includes(req.method) && req.get('x-courarr') !== '1') {
-    return res.status(403).json({ error: 'Request blocked: missing X-Courarr header' });
+    return res.status(403).json({
+      error: 'This page is out of date — Courarr was updated since it was opened. Reload the page (Ctrl+F5) and try again.',
+      code: 'reload',
+    });
   }
   req.caller = who;
   next();
@@ -817,10 +828,10 @@ app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not found')));
 // index.html references its assets with a per-start version so browsers that cached an older
 // app.js/app.css (before an update) always fetch the new ones.
 const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url));
-const ASSET_VERSION = `${VERSION}-${Date.now().toString(36)}`;
 const indexHtml = fs
   .readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
-  .replace(/(href|src)="(app\.(?:js|css))"/g, `$1="$2?v=${ASSET_VERSION}"`);
+  .replace(/(href|src)="(app\.(?:js|css))"/g, `$1="$2?v=${BUILD}"`)
+  .replace('<meta name="courarr-build" content="" />', `<meta name="courarr-build" content="${BUILD}" />`);
 app.get(['/', '/index.html'], (_req, res) => res.set('Cache-Control', 'no-cache').type('html').send(indexHtml));
 
 // no-cache = revalidate by ETag on every load, so a container update never serves a stale UI.

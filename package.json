@@ -1,6 +1,6 @@
 {
   "name": "courarr",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Auto-updating Sonarr and Radarr lists: seasonal anime from AniList, TV and movies from TMDB.",
   "type": "module",
   "private": true,

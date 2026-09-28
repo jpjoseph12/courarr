@@ -112,6 +112,13 @@ describe('web UI and basics', () => {
     assert.match(r.body, /app\.js\?v=/);
     assert.match(r.body, /app\.css\?v=/);
     assert.equal(r.headers.get('cache-control'), 'no-cache');
+    // Every response names the server build; the page embeds the same one, so an open tab can
+    // tell when Courarr was updated underneath it and reload.
+    const build = r.headers.get('x-courarr-build');
+    assert.match(build, /^\d+\.\d+\.\d+-[0-9a-z]+$/);
+    assert.ok(r.body.includes(`<meta name="courarr-build" content="${build}" />`));
+    assert.ok(r.body.includes(`app.js?v=${build}`));
+    assert.equal((await api('GET', '/api/health')).headers.get('x-courarr-build'), build);
     const js = await api('GET', '/app.js');
     assert.equal(js.status, 200);
     assert.equal(js.headers.get('cache-control'), 'no-cache');
