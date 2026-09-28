@@ -423,3 +423,13 @@ details.form-sec.sec { display: block; padding: 0; }
 .notifier { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; display: flex; flex-direction: column; gap: 10px; background: var(--bg); }
 .mt-cols { display: flex; flex-direction: column; gap: 8px; }
 .check.disabled { opacity: 0.5; }
+
+/* Grid/flex children default to min-width:auto, so one long line (a URL, a row of chips)
+   can push the editor wider than a phone screen. Let them shrink and wrap instead. */
+.editor > *, .row > *, .arr-bar > *, .results-head > * { min-width: 0; }
+.seg button { white-space: normal; line-height: 1.2; min-height: 28px; height: auto; padding: 4px 6px; }
+.arr-bar span { overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .results-head .tabs { flex-wrap: wrap; }
+  .arr-bar .spacer { display: none; }
+}

@@ -12,6 +12,18 @@ Courarr builds lists from saved searches and serves each one as a feed that Sona
 
 Lists refresh every night at 3 AM (configurable) or when you click **Refresh**. A *cour* is an anime broadcast season, hence the name.
 
+<p align="center"><img src="docs/screenshots/editor-anime.png" alt="The list editor: filters on the left, a live preview of the list with posters and how each title was matched on the right" width="900"></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/lists.png" alt="Lists page: anime, TV and movie lists with their feed URLs and counts"><br><sub><b>Lists</b>: anime, TV and movie lists, each with its own feed URL.</sub></td>
+    <td width="50%"><img src="docs/screenshots/settings.png" alt="Settings: TMDB, OMDb, Maintainerr, notifications, Sonarr and Radarr"><br><sub><b>Settings</b>: every connection is optional and has a Test button.</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/screenshots/editor-tv.png" alt="TV list editor on a phone-sized screen" width="300"><br><sub><b>TV list editor</b>: Standard/Daily series type and collapsible filter sections. Works on a phone.</sub></td>
+  </tr>
+</table>
+
 **Contents:** [Features](#features) · [What you need](#what-you-need) · [Install](#install) · [Networking](#networking-which-address-goes-where) · [First-time setup](#first-time-setup) · [Updating & backups](#updating-backups--uninstalling) · [Security](#security) · [Troubleshooting](#troubleshooting) · [How it works](#how-ids-are-matched) · [Development](#development)
 
 ---
