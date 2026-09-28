@@ -4,6 +4,8 @@
 
 <p align="center">Auto-updating lists for <b>Sonarr</b> and <b>Radarr</b>: seasonal anime from AniList, and regular TV & movies from TMDB.</p>
 
+<p align="center"><a href="https://github.com/jpjoseph12/courarr/actions/workflows/docker.yml"><img src="https://github.com/jpjoseph12/courarr/actions/workflows/docker.yml/badge.svg" alt="Tests, build & publish"></a></p>
+
 Courarr builds lists from saved searches and serves each one as a feed that Sonarr or Radarr imports. Examples:
 
 - "this season's 50 most popular anime"
@@ -359,11 +361,21 @@ Titles with no ID yet show as **Unmatched** and stay out of the feed until one e
 
 ```bash
 npm install
-npm run dev     # http://localhost:6161, data in ./.config
-npm test
+npm run dev            # http://localhost:6161, data in ./.config
+npm test               # all tests (about a second, fully offline)
+npm run test:coverage  # same, plus coverage report and minimum thresholds
 ```
 
-You can develop without keys:
+The tests run the real app against local stand-ins for every outside service (AniList, the ID mapping, TMDB, OMDb, Sonarr, Radarr, Maintainerr and webhooks), so no network or API keys are needed. The stand-ins are in `test/fixtures/`.
+
+**Continuous integration:** every push and pull request runs:
+- the test suite, which fails if coverage drops below 90% of lines, 75% of branches or 85% of functions;
+- a syntax check of the web UI;
+- a smoke test that builds the Docker image, starts it with custom `PUID`/`PGID`/`TZ`, and checks the API, UI and feeds, the file ownership and the time zone.
+
+The image is only published to GHCR when all of these pass on `main` or a version tag.
+
+To try the UI without keys:
 - **TMDB:** run `node test/fixtures/mock-tmdb.mjs 7071`, then start Courarr with `TMDB_BASE_URL=http://localhost:7071/3` and use the API key `test`.
 - **Maintainerr and webhooks:** `node test/fixtures/mock-services.mjs` stands in for Maintainerr (:7075) and a webhook receiver (:7099).
 

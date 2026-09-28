@@ -478,12 +478,15 @@ export function applyDrip(prev, items, maxNew, now = new Date()) {
   const stamp = now.toISOString();
   // Anything that was in the feed before (incl. lists saved before drip existed) counts as fed.
   const fed = new Map(prev.filter((p) => p.fedAt || (p.externalId && !p.queued)).map((p) => [p.key, p.fedAt || p.lastSeen || stamp]));
+  // A sequel shares its series' id: once the series is in the feed, the sequel is free.
+  const fedIds = new Set(prev.filter((p) => fed.has(p.key) && p.externalId).map((p) => p.externalId));
   let budget = maxNew > 0 ? maxNew : Infinity;
   return items.map((it) => {
     if (fed.has(it.key)) return { ...it, fedAt: fed.get(it.key), queued: false };
     if (!it.externalId || it.excluded || it.ignored) return { ...it, queued: false };
-    if (it.inLibrary || budget > 0) {
-      if (!it.inLibrary) budget--;
+    if (it.inLibrary || fedIds.has(it.externalId) || budget > 0) {
+      if (!it.inLibrary && !fedIds.has(it.externalId)) budget--;
+      fedIds.add(it.externalId);
       return { ...it, fedAt: stamp, queued: false };
     }
     return { ...it, queued: true };
@@ -552,7 +555,13 @@ async function doRefresh(listIds, trigger) {
         const matched = items.filter((i) => i.externalId).length;
         const queued = items.filter((i) => i.queued).length;
         const prevFeed = new Set(feedFor(list, prev).map((x) => x.id ?? x.tvdbId));
-        const added = items.filter((i) => feedFor(list, [i]).length && !prevFeed.has(i.externalId) && !i.inLibrary);
+        // One entry per new series/movie: a sequel sharing its series' id isn't news twice.
+        const addedIds = new Set();
+        const added = items.filter((i) => {
+          if (!feedFor(list, [i]).length || prevFeed.has(i.externalId) || i.inLibrary || addedIds.has(i.externalId)) return false;
+          addedIds.add(i.externalId);
+          return true;
+        });
         summary.lists.push({ id: list.id, name: list.name, label, total: items.length, matched, queued, added: added.length });
         touched.add(list.target);
         log(`  ${list.name}: ${matched}/${items.length} matched, ${added.length} new${queued ? `, ${queued} queued` : ''} (${label})`);

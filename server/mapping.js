@@ -3,7 +3,8 @@ import path from 'node:path';
 import { CACHE_DIR, log } from './config.js';
 
 // Community-maintained AniList/MAL/AniDB -> TVDB/TMDB/IMDb mapping.
-const SOURCE = 'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json';
+// MAPPING_URL lets tests serve a small fixture instead.
+const SOURCE = process.env.MAPPING_URL || 'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json';
 const FILE = path.join(CACHE_DIR, 'anime-list-full.json');
 const MAX_AGE_MS = 20 * 3600_000;
 
