@@ -272,6 +272,7 @@ export function discoverParams(kind, f, region, at = new Date()) {
     with_keywords: (f.keywordsInclude || []).map((k) => k.id).join('|'),
     without_keywords: withoutKeywords.join(','),
     with_companies: (f.companies || []).map((c) => c.id).join('|'),
+    without_companies: (f.companiesExclude || []).map((c) => c.id).join(','),
   };
   // With "keep unrated" the rating is checked from details instead, since discover drops unrated titles.
   if (f.maxCertification && !f.keepUnrated) {
@@ -280,9 +281,10 @@ export function discoverParams(kind, f, region, at = new Date()) {
   }
   if (f.providers.length) {
     params.with_watch_providers = f.providers.join('|');
-    params.watch_region = region;
     params.with_watch_monetization_types = 'flatrate|free|ads';
   }
+  if (f.providersExclude?.length) params.without_watch_providers = f.providersExclude.join(',');
+  if (f.providers.length || f.providersExclude?.length) params.watch_region = region;
   if (kind === 'movie') {
     params.with_people = (f.people || []).map((p) => p.id).join('|');
     if (f.releaseType !== 'any') {
@@ -349,9 +351,14 @@ function certsOf(kind, d) {
   return out;
 }
 
+// Bump when summarise() gains fields, so older cached details are fetched again.
+const DETAILS_VERSION = 2;
+
 function summarise(kind, d) {
   if (kind === 'tv') {
     return {
+      v: DETAILS_VERSION,
+      networks: (d.networks || []).map((n) => n.id),
       tvdbId: d.external_ids?.tvdb_id || null,
       imdbId: d.external_ids?.imdb_id || null,
       seasons: d.number_of_seasons ?? null,
@@ -364,6 +371,7 @@ function summarise(kind, d) {
     };
   }
   return {
+    v: DETAILS_VERSION,
     imdbId: d.imdb_id || d.external_ids?.imdb_id || null,
     runtime: d.runtime || null,
     status: d.status || null,
@@ -379,7 +387,8 @@ export async function tmdbDetails(client, kind, ids) {
   for (const id of ids) {
     const c = store.getTmdbDetails(kind, id);
     const age = c ? Date.now() - new Date(c.fetched_at).getTime() : Infinity;
-    const fresh = c && age < DETAILS_MAX_AGE_MS && (kind !== 'tv' || c.data.tvdbId || age < NO_TVDB_MAX_AGE_MS);
+    const fresh =
+      c && c.data.v === DETAILS_VERSION && age < DETAILS_MAX_AGE_MS && (kind !== 'tv' || c.data.tvdbId || age < NO_TVDB_MAX_AGE_MS);
     if (fresh) out.set(id, c.data);
     else todo.push(id);
   }
@@ -421,6 +430,14 @@ async function personTvCredits(client, personId) {
   });
 }
 
+/** Films a person acted in or worked on. */
+async function personMovieCredits(client, personId) {
+  return cached(`person-movie:${personId}`, async () => {
+    const r = await client.get(`/person/${personId}/movie_credits`, { language: 'en-US' });
+    return [...(r.cast || []), ...(r.crew || [])];
+  });
+}
+
 /** Age-rating check: `certs` is { region: code }. Unknown ratings pass only with keepUnrated. */
 export async function certificationCheck(client, kind, f, region) {
   if (!f.maxCertification) return () => true;
@@ -458,6 +475,12 @@ export async function searchTmdb(client, kind, f, region, { candidates = null, c
   const withDetails =
     kind === 'tv' || needImdb || !!certOk || runtimeLocal || f.sequels !== 'include' || (f.movieStatuses || []).length > 0;
   const tvTypes = kind === 'tv' ? new Set(allowedTvTypes(f)) : null;
+  const networksOut = new Set(kind === 'tv' ? f.networksExclude || [] : []);
+  // Left-out people: anything in their credits is dropped (discover has no without_people).
+  const blocked = new Set();
+  for (const p of f.peopleExclude || []) {
+    for (const c of await (kind === 'tv' ? personTvCredits : personMovieCredits)(client, p.id)) blocked.add(c.id);
+  }
 
   // Candidate pages: discover, trending, or (TV) the chosen people's credits.
   let creditPool = candidates;
@@ -485,7 +508,7 @@ export async function searchTmdb(client, kind, f, region, { candidates = null, c
   for (let page = 1; page <= maxPages && out.length < limit && examined < MAX_CANDIDATES; page++) {
     const data = await pageOf(page);
     let batch = (data.results || []).filter((r) => {
-      if (seen.has(r.id) || r.adult) return false;
+      if (seen.has(r.id) || r.adult || blocked.has(r.id)) return false;
       seen.add(r.id);
       if ((trending || tvPeople) && !passesLocalFilters(r, kind, f, range)) return false;
       if (!passesRating(r, f)) return false; // discover applies it too, except with keepUnrated
@@ -507,6 +530,7 @@ export async function searchTmdb(client, kind, f, region, { candidates = null, c
         if (runtimeLocal && !inRange(x.runtime, f.minRuntime, f.maxRuntime)) continue;
         if (kind === 'tv') {
           if (x.type >= 0 && !tvTypes.has(x.type)) continue;
+          if (networksOut.size && (x.networks || []).some((id) => networksOut.has(id))) continue;
           if (!inRange(x.seasons, f.minSeasons, f.maxSeasons)) continue;
           if (!inRange(x.episodes, f.minEpisodes, f.maxEpisodes)) continue;
           if (f.upcomingEpisode && !x.nextEpisode) continue;

@@ -7,11 +7,11 @@ import http from 'node:http';
 const ANIME = 210024;
 const TYPES = ['Documentary', 'News', 'Miniseries', 'Reality', 'Scripted', 'Talk Show', 'Video'];
 const TV = [
-  { id: 1396, name: 'Breaking Bad', tvdb: 81189, imdb: 'tt0903747', genre_ids: [18, 80], original_language: 'en', origin_country: ['US'], first_air_date: '2008-01-20', vote_average: 8.9, vote_count: 15000, popularity: 300, type: 4, seasons: 5, episodes: 62, runtime: 47, status: 'Ended', cert: { US: 'TV-MA', GB: '15' }, companies: [11073], cast: [17419] },
-  { id: 100088, name: 'The Last of Us', tvdb: 392256, imdb: 'tt3581920', genre_ids: [18, 10759], original_language: 'en', origin_country: ['US'], first_air_date: '2023-01-15', vote_average: 8.6, vote_count: 5000, popularity: 250, type: 4, seasons: 2, episodes: 16, runtime: 55, status: 'Returning Series', next: '2026-10-05', cert: { US: 'TV-MA', GB: '18' }, companies: [], cast: [1253360] },
+  { id: 1396, networks: [174], name: 'Breaking Bad', tvdb: 81189, imdb: 'tt0903747', genre_ids: [18, 80], original_language: 'en', origin_country: ['US'], first_air_date: '2008-01-20', vote_average: 8.9, vote_count: 15000, popularity: 300, type: 4, seasons: 5, episodes: 62, runtime: 47, status: 'Ended', cert: { US: 'TV-MA', GB: '15' }, companies: [11073], cast: [17419] },
+  { id: 100088, networks: [49], name: 'The Last of Us', tvdb: 392256, imdb: 'tt3581920', genre_ids: [18, 10759], original_language: 'en', origin_country: ['US'], first_air_date: '2023-01-15', vote_average: 8.6, vote_count: 5000, popularity: 250, type: 4, seasons: 2, episodes: 16, runtime: 55, status: 'Returning Series', next: '2026-10-05', cert: { US: 'TV-MA', GB: '18' }, companies: [], cast: [1253360] },
   { id: 95396, name: 'Severance', tvdb: 371980, imdb: 'tt11280740', genre_ids: [18, 9648, 10765], original_language: 'en', origin_country: ['US'], first_air_date: '2022-02-17', vote_average: 8.4, vote_count: 2000, popularity: 200, type: 4, seasons: 2, episodes: 19, runtime: 50, status: 'Returning Series', cert: { US: 'TV-MA', GB: '15' }, companies: [], cast: [] },
   // No TVDB id on purpose: Sonarr has to resolve it from the TMDB id.
-  { id: 126308, name: 'Shōgun', tvdb: null, imdb: 'tt2788316', genre_ids: [18, 10768], original_language: 'en', origin_country: ['US'], first_air_date: '2024-02-27', vote_average: 8.5, vote_count: 1500, popularity: 150, type: 2, seasons: 1, episodes: 10, runtime: 60, status: 'Returning Series', cert: { US: 'TV-MA' }, companies: [], cast: [] },
+  { id: 126308, networks: [88], name: 'Shōgun', tvdb: null, imdb: 'tt2788316', genre_ids: [18, 10768], original_language: 'en', origin_country: ['US'], first_air_date: '2024-02-27', vote_average: 8.5, vote_count: 1500, popularity: 150, type: 2, seasons: 1, episodes: 10, runtime: 60, status: 'Returning Series', cert: { US: 'TV-MA' }, companies: [], cast: [] },
   // A date-based talk show: must only appear in Daily lists.
   { id: 2224, name: 'The Daily Show', tvdb: 71256, imdb: 'tt0115147', genre_ids: [35, 10767], original_language: 'en', origin_country: ['US'], first_air_date: '1996-07-22', vote_average: 6.4, vote_count: 500, popularity: 100, type: 5, seasons: 30, episodes: 4000, runtime: 22, status: 'Returning Series', next: '2026-09-29', cert: { US: 'TV-14' }, companies: [], cast: [] },
   { id: 209867, name: "Frieren: Beyond Journey's End", tvdb: 424536, imdb: 'tt22248376', genre_ids: [16, 10759, 10765], original_language: 'ja', origin_country: ['JP'], first_air_date: '2023-09-29', vote_average: 8.8, vote_count: 600, popularity: 120, keywords: [ANIME], type: 4, seasons: 1, episodes: 28, runtime: 24, status: 'Returning Series', cert: {}, companies: [], cast: [] },
@@ -64,6 +64,8 @@ function discover(kind, list, q) {
   const rmax = Number(q.get('with_runtime.lte') || 0);
   r = r.filter((x) => (!rmin || x.runtime >= rmin) && (!rmax || x.runtime <= rmax));
   const comp = ids(q.get('with_companies'), '|');
+  const noComp = ids(q.get('without_companies'), ',');
+  if (noComp.length) r = r.filter((x) => !(x.companies || []).some((c) => noComp.includes(c)));
   if (comp.length) r = r.filter((x) => x.companies.some((c) => comp.includes(c)));
   const people = ids(q.get('with_people'), '|');
   if (people.length) r = r.filter((x) => x.cast.some((c) => people.includes(c)));
@@ -82,7 +84,7 @@ function discover(kind, list, q) {
   return r;
 }
 
-const strip = ({ tvdb, imdb, keywords, type, seasons, episodes, runtime, status, next, cert, companies, cast, collection, ...rest }) => ({
+const strip = ({ tvdb, imdb, keywords, networks, type, seasons, episodes, runtime, status, next, cert, companies, cast, collection, ...rest }) => ({
   ...rest,
   poster_path: null,
   adult: false,
@@ -93,6 +95,7 @@ function tvDetails(s) {
     id: s.id,
     name: s.name,
     type: TYPES[s.type],
+    networks: (s.networks || []).map((id) => ({ id, name: NETWORK_NAMES[id] })),
     number_of_seasons: s.seasons,
     number_of_episodes: s.episodes,
     episode_run_time: [s.runtime],
@@ -175,6 +178,10 @@ export function start(port = 7071) {
     if ((m = p.match(/^\/person\/(\d+)\/tv_credits$/))) {
       const pid = Number(m[1]);
       return send(200, { cast: TV.filter((s) => s.cast.includes(pid)).map(strip), crew: [] });
+    }
+    if ((m = p.match(/^\/person\/(\d+)\/movie_credits$/))) {
+      const pid = Number(m[1]);
+      return send(200, { cast: MOVIE.filter((x) => x.cast.includes(pid)).map(strip), crew: [] });
     }
     if ((m = p.match(/^\/network\/(\d+)$/))) {
       const name = NETWORK_NAMES[m[1]];

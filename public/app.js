@@ -340,6 +340,18 @@ function describe(l) {
   if (f.dripMax > 0) parts.push(`${f.dripMax} new per refresh`);
   const sc = [f.minImdb > 0 && `IMDb ≥ ${f.minImdb}`, f.minRt > 0 && `RT ≥ ${f.minRt}%`, f.minMetacritic > 0 && `MC ≥ ${f.minMetacritic}`].filter(Boolean);
   if (sc.length) parts.push(sc.join(', '));
+  // "Leaves out …" for every picker that has a left-out list.
+  const out = [
+    [f.studiosExclude, 'studio'],
+    [f.peopleExclude, 'person', 'people'],
+    [f.companiesExclude, 'company', 'companies'],
+    [f.streamingExclude, 'streaming site'],
+    [f.providersExclude, 'streaming service'],
+    [f.networksExclude, 'network'],
+  ]
+    .filter(([a]) => a?.length)
+    .map(([a, one, many]) => `${a.length} ${a.length > 1 ? many || `${one}s` : one}`);
+  if (out.length) parts.push(`leaves out ${out.join(', ')}`);
   if (l.source === 'tmdb') {
     const n = f.genresInclude.length + f.genresExclude.length + f.keywordsInclude.length + f.keywordsExclude.length;
     if (f.providers.length) parts.push(`${f.providers.length} streaming service${f.providers.length > 1 ? 's' : ''}`);
@@ -512,6 +524,7 @@ async function viewEditor(id, params, token) {
     entResults: {},
     networkNames: {},
     open: new Set(['when', 'what']),
+    modes: {}, // per field: does clicking a chip include it or leave it out?
     items: saved?.items?.length ? saved.items : null,
     label: saved?.label || null,
     mode: saved?.items?.length ? 'saved' : 'none',
@@ -576,7 +589,8 @@ async function viewEditor(id, params, token) {
   // Names for network ids that aren't in the curated list.
   async function resolveNetworkNames() {
     const known = new Set((ed.tmeta?.networks || []).map((x) => x.id));
-    const todo = (ed.draft.filters.networks || []).filter((id) => !known.has(id) && !ed.networkNames[id]);
+    const fl = ed.draft.filters;
+    const todo = [...(fl.networks || []), ...(fl.networksExclude || [])].filter((id) => !known.has(id) && !ed.networkNames[id]);
     if (!todo.length) return;
     await Promise.all(
       todo.map((id) =>
@@ -660,7 +674,7 @@ async function viewEditor(id, params, token) {
   });
 
   form.addEventListener('click', async (e) => {
-    const b = e.target.closest('button,[data-chip],[data-tri]');
+    const b = e.target.closest('button,[data-chip],[data-pair]');
     if (!b) return;
     const f = ed.draft.filters;
     if ((b.dataset.target && b.dataset.target !== ed.draft.target) || (b.dataset.source && b.dataset.source !== ed.draft.source)) {
@@ -685,21 +699,28 @@ async function viewEditor(id, params, token) {
       updateCounts();
       return;
     }
-    if (b.dataset.tri) {
-      // tri-state: off → required → excluded → off
+    if (b.dataset.modeFor) {
+      ed.modes[b.dataset.modeFor] = b.dataset.mode;
+      b.parentElement.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      return;
+    }
+    if (b.dataset.pair) {
+      // Clicking adds the value to the list the field's switch points at (moving it out of
+      // the other one), or clears it if it's already there.
+      const inc = b.dataset.pair;
+      const exc = PAIRS[inc];
       const v = b.dataset.num ? Number(b.dataset.v) : b.dataset.v;
-      const inc = f.genresInclude.indexOf(v);
-      const exc = f.genresExclude.indexOf(v);
-      if (inc >= 0) {
-        f.genresInclude.splice(inc, 1);
-        f.genresExclude.push(v);
-      } else if (exc >= 0) {
-        f.genresExclude.splice(exc, 1);
-      } else {
-        f.genresInclude.push(v);
+      const [mine, other] = ed.modes[inc] === 'exclude' ? [exc, inc] : [inc, exc];
+      f[mine] ||= [];
+      f[other] ||= [];
+      const i = f[mine].indexOf(v);
+      if (i >= 0) f[mine].splice(i, 1);
+      else {
+        f[mine].push(v);
+        f[other] = f[other].filter((x) => x !== v);
       }
-      b.classList.toggle('on', f.genresInclude.includes(v));
-      b.classList.toggle('not', f.genresExclude.includes(v));
+      b.classList.toggle('on', f[inc].includes(v));
+      b.classList.toggle('not', f[exc].includes(v));
       updateCounts();
       return;
     }
@@ -738,8 +759,12 @@ async function viewEditor(id, params, token) {
       } catch (err) {
         return toast(err.message, true);
       }
-      if (!f.networks.includes(id)) f.networks.push(id);
-      toast(`Added ${ed.networkNames[id]}`);
+      const [inc, exc] = pairKeys('networks');
+      const key = ed.modes.networks === 'exclude' ? exc : inc;
+      f[inc] = (f[inc] || []).filter((x) => x !== id);
+      f[exc] = (f[exc] || []).filter((x) => x !== id);
+      f[key].push(id);
+      toast(`${key === exc ? 'Leaving out' : 'Added'} ${ed.networkNames[id]}`);
       renderForm();
       return;
     }
@@ -824,10 +849,8 @@ async function viewEditor(id, params, token) {
     }
     if (!hit) return toast(`Nothing matches "${input.value.trim()}"`, true);
     const f = ed.draft.filters;
-    // A keyword can be required or excluded, not both.
-    for (const k of key.startsWith('keywords') ? ['keywordsInclude', 'keywordsExclude'] : [key]) {
-      f[k] = (f[k] || []).filter((x) => x.id !== hit.id);
-    }
+    // Included or left out, not both.
+    for (const k of pairKeys(key)) f[k] = (f[k] || []).filter((x) => x.id !== hit.id);
     f[key].push(hit);
     renderForm();
     form.querySelector(`#${input.id}`)?.focus();
@@ -1006,8 +1029,10 @@ function sectionCounts(d) {
       len(f.genresInclude) + len(f.genresExclude) + len(f.tagsInclude) + len(f.tagsExclude) +
       len(f.keywordsInclude) + len(f.keywordsExclude) + len(f.statuses) + len(f.tvStatuses) + len(f.tvTypes) +
       len(f.movieStatuses) + (f.sequels && f.sequels !== 'include' ? 1 : 0) + (tmdb && !f.excludeAnime ? 1 : 0),
-    where: len(f.countries) + len(f.languages) + len(f.streaming) + len(f.providers) + len(f.networks),
-    who: len(f.people) + len(f.studios) + len(f.companies),
+    where:
+      len(f.countries) + len(f.languages) + len(f.streaming) + len(f.streamingExclude) + len(f.providers) + len(f.providersExclude) +
+      len(f.networks) + len(f.networksExclude),
+    who: len(f.people) + len(f.peopleExclude) + len(f.studios) + len(f.studiosExclude) + len(f.companies) + len(f.companiesExclude),
     length:
       (n(f.minRuntime) || n(f.maxRuntime) ? 1 : 0) + (n(f.minEpisodes) || n(f.maxEpisodes) ? 1 : 0) +
       (n(f.minSeasons) || n(f.maxSeasons) ? 1 : 0) + (f.maxCertification ? 1 : 0) + (f.upcomingEpisode ? 1 : 0) +
@@ -1122,8 +1147,8 @@ function entityField(ed, { type, keys, label, placeholder, hint }) {
       <label for="ent-${incKey}">${label}</label>
       <div class="tag-add">
         <input class="input" id="ent-${incKey}" list="dl-${incKey}" data-ent-type="${type}" placeholder="${esc(placeholder)}" />
-        <button type="button" class="btn btn-sm" data-ent-add="${incKey}" data-ent-input="ent-${incKey}">${excKey ? 'Require' : 'Add'}</button>
-        ${excKey ? `<button type="button" class="btn btn-sm" data-ent-add="${excKey}" data-ent-input="ent-${incKey}">Exclude</button>` : ''}
+        <button type="button" class="btn btn-sm" data-ent-add="${incKey}" data-ent-input="ent-${incKey}">${excKey ? 'Include' : 'Add'}</button>
+        ${excKey ? `<button type="button" class="btn btn-sm" data-ent-add="${excKey}" data-ent-input="ent-${incKey}">Leave out</button>` : ''}
       </div>
       <datalist id="dl-${incKey}"></datalist>
       ${chips ? `<div class="chips">${chips}</div>` : ''}
@@ -1240,8 +1265,42 @@ function footSection(ed) {
 const chipHtml = (arr, key, v, label, num = false) =>
   `<button type="button" class="chip${arr.includes(v) ? ' on' : ''}" data-chip="${key}" data-v="${esc(v)}"${num ? ' data-num="1"' : ''}>${esc(label)}</button>`;
 
-const triHtml = (f, v, label, num = false) =>
-  `<button type="button" class="chip${f.genresInclude.includes(v) ? ' on' : ''}${f.genresExclude.includes(v) ? ' not' : ''}" data-tri="1" data-v="${esc(v)}"${num ? ' data-num="1"' : ''}>${esc(label)}</button>`;
+/** Include / leave-out pairs: a value can be in one list or the other, never both. */
+const PAIRS = {
+  genresInclude: 'genresExclude',
+  keywordsInclude: 'keywordsExclude',
+  tagsInclude: 'tagsExclude',
+  people: 'peopleExclude',
+  studios: 'studiosExclude',
+  companies: 'companiesExclude',
+  streaming: 'streamingExclude',
+  providers: 'providersExclude',
+  networks: 'networksExclude',
+};
+const pairKeys = (key) => {
+  const inc = PAIRS[key] ? key : Object.keys(PAIRS).find((k) => PAIRS[k] === key);
+  return inc ? [inc, PAIRS[inc]] : [key];
+};
+
+/** A chip that's included (on), left out (not) or neither; clicking follows the field's Include / Leave out toggle. */
+const pairChip = (f, inc, v, label, num = false) =>
+  `<button type="button" class="chip${(f[inc] || []).includes(v) ? ' on' : ''}${(f[PAIRS[inc]] || []).includes(v) ? ' not' : ''}" data-pair="${inc}" data-v="${esc(v)}"${num ? ' data-num="1"' : ''}>${esc(label)}</button>`;
+
+/** The Include / Leave out switch for a pair of lists (editor-only state, not saved). */
+const modeToggle = (ed, inc) =>
+  `<div class="seg" style="flex:none;width:190px">${[
+    ['include', 'Include'],
+    ['exclude', 'Leave out'],
+  ]
+    .map(([v, l]) => `<button type="button" data-mode-for="${inc}" data-mode="${v}" class="${(ed.modes[inc] || 'include') === v ? 'on' : ''}">${l}</button>`)
+    .join('')}</div>`;
+
+/** Field heading with the Include / Leave out switch on the right. */
+const pickHead = (ed, inc, label) => `
+      <div class="row" style="align-items:center">
+        <span class="label" style="flex:1">${label}</span>
+        ${modeToggle(ed, inc)}
+      </div>`;
 
 const segHtml = (path, current, options, rerender = false) =>
   `<div class="seg">${options
@@ -1251,15 +1310,17 @@ const segHtml = (path, current, options, rerender = false) =>
 const removableChips = (list, key, cls) =>
   list.map((t) => `<button type="button" class="chip ${cls}" data-remove="${key}" data-v="${esc(t.id ?? t)}">${esc(t.name ?? t)} <span class="x">×</span></button>`);
 
-function genresField(f, genres, num) {
+function genresField(ed, genres, num) {
+  const f = ed.draft.filters;
   return `
     <div class="field">
+      ${pickHead(ed, 'genresInclude', 'Genres')}
+      <span class="hint">Pick <b>Include</b> or <b>Leave out</b>, then click genres. Click one again to clear it. Titles with any left-out genre are dropped.</span>
+      <div class="chips">${genres.map((g) => (num ? pairChip(f, 'genresInclude', g.id, g.name, true) : pairChip(f, 'genresInclude', g, g))).join('')}</div>
       <div class="row" style="align-items:center">
-        <span class="label" style="flex:1">Genres</span>
-        <div style="flex:none;width:190px">${segHtml('filters.genreMatch', f.genreMatch || 'all', [['all', 'Match all'], ['any', 'Match any']])}</div>
+        <span class="hint" style="flex:1">Included genres: titles need</span>
+        <div style="flex:none;width:190px">${segHtml('filters.genreMatch', f.genreMatch || 'all', [['all', 'All of them'], ['any', 'Any of them']])}</div>
       </div>
-      <span class="hint">Click once to require, twice to exclude.</span>
-      <div class="chips">${genres.map((g) => (num ? triHtml(f, g.id, g.name, true) : triHtml(f, g, g))).join('')}</div>
     </div>`;
 }
 
@@ -1304,13 +1365,13 @@ function animeFormHtml(ed) {
       <span class="label">Format</span>
       <div class="chips">${formats.map((x) => chipHtml(f.formats, 'formats', x, FORMAT_NAMES[x])).join('')}</div>
     </div>
-    ${genresField(f, ed.meta.genres, false)}
+    ${genresField(ed, ed.meta.genres, false)}
     <div class="field">
       <label for="tag-input">Tags</label>
       <div class="tag-add">
         <input class="input" id="tag-input" list="tag-list" placeholder="Isekai, Iyashikei, Time Skip…" />
-        <button type="button" class="btn btn-sm" data-tag-add="tagsInclude">Require</button>
-        <button type="button" class="btn btn-sm" data-tag-add="tagsExclude">Exclude</button>
+        <button type="button" class="btn btn-sm" data-tag-add="tagsInclude">Include</button>
+        <button type="button" class="btn btn-sm" data-tag-add="tagsExclude">Leave out</button>
       </div>
       ${
         f.tagsInclude.length + f.tagsExclude.length
@@ -1329,8 +1390,8 @@ function animeFormHtml(ed) {
 
   const where = `
     <div class="field">
-      <span class="label">Streaming on <span class="label-note">— none = any</span></span>
-      <div class="chips">${(ed.meta.streaming || []).map((x) => chipHtml(f.streaming, 'streaming', x.id, x.name, true)).join('')}</div>
+      ${pickHead(ed, 'streaming', 'Streaming on <span class="label-note">— none = any</span>')}
+      <div class="chips">${(ed.meta.streaming || []).map((x) => pairChip(f, 'streaming', x.id, x.name, true)).join('')}</div>
     </div>
     <div class="field">
       <span class="label">Country of origin</span>
@@ -1338,8 +1399,8 @@ function animeFormHtml(ed) {
     </div>`;
 
   const who = `
-    ${entityField(ed, { type: 'studio', keys: ['studios'], label: 'Studios', placeholder: 'MAPPA, Kyoto Animation, ufotable…', hint: 'Matches the main animation studio. Any of them.' })}
-    ${entityField(ed, { type: 'staff', keys: ['people'], label: 'People', placeholder: 'Director, composer or voice actor…', hint: 'Anime any of these people worked on or voiced.' })}`;
+    ${entityField(ed, { type: 'studio', keys: ['studios', 'studiosExclude'], label: 'Studios', placeholder: 'MAPPA, Kyoto Animation, ufotable…', hint: 'Matches the main animation studio. Included: any of them. Left out: anime from any of them are dropped.' })}
+    ${entityField(ed, { type: 'staff', keys: ['people', 'peopleExclude'], label: 'People', placeholder: 'Director, composer or voice actor…', hint: 'Included: anime any of them worked on or voiced. Left out: anime any of them worked on are dropped.' })}`;
 
   const length = `
     ${rangeRow(tv ? 'Episode length' : 'Runtime', 'filters.minRuntime', 'filters.maxRuntime', f, 'minRuntime', 'maxRuntime', 'minutes')}
@@ -1452,12 +1513,12 @@ function tmdbFormHtml(ed) {
     }`;
 
   const what = `
-    ${genresField(f, m.genres, true)}
+    ${genresField(ed, m.genres, true)}
     <label class="check">
       <input type="checkbox" data-f="filters.excludeAnime"${f.excludeAnime ? ' checked' : ''} />
       <span><b>Leave out anime</b><span class="hint">Use an Anime list for those${tv ? ' — they need the Anime series type' : ''}.</span></span>
     </label>
-    ${trending || byPeople ? '' : entityField(ed, { type: 'keyword', keys: ['keywordsInclude', 'keywordsExclude'], label: 'Keywords', placeholder: 'time travel, heist, based on novel…', hint: 'Required keywords match if <i>any</i> of them apply.' })}
+    ${trending || byPeople ? '' : entityField(ed, { type: 'keyword', keys: ['keywordsInclude', 'keywordsExclude'], label: 'Keywords', placeholder: 'time travel, heist, based on novel…', hint: 'Included keywords match if <i>any</i> of them apply. Titles with any left-out keyword are dropped.' })}
     ${
       tv
         ? `<div class="field">
@@ -1482,7 +1543,7 @@ function tmdbFormHtml(ed) {
           </div>`
     }`;
 
-  const customNets = f.networks.filter((id) => !m.networks.some((x) => x.id === id));
+  const customNets = ['networks', 'networksExclude'].flatMap((key) => (f[key] || []).filter((id) => !m.networks.some((x) => x.id === id)).map((id) => [key, id]));
   const where = `
     <div class="field">
       <span class="label">Original language <span class="label-note">— none = any</span></span>
@@ -1503,19 +1564,20 @@ function tmdbFormHtml(ed) {
         : `<div class="field">
             <div class="row" style="align-items:flex-end">
               <span class="label" style="flex:1">Streaming on <span class="label-note">— subscription / free</span></span>
+              ${modeToggle(ed, 'providers')}
               <select class="select" data-f="filters.region" title="Streaming & age-rating region" style="flex:none;width:90px;height:30px">
                 ${REGIONS.map((r) => `<option value="${r}"${region === r ? ' selected' : ''}>${r}</option>`).join('')}
               </select>
             </div>
-            <div class="chips">${m.providers.map((p) => chipHtml(f.providers, 'providers', p.id, p.name, true)).join('')}</div>
+            <div class="chips">${m.providers.map((p) => pairChip(f, 'providers', p.id, p.name, true)).join('')}</div>
           </div>
           ${
             tv
               ? `<div class="field">
-                  <span class="label">Network / channel <span class="label-note">— original broadcaster</span></span>
+                  ${pickHead(ed, 'networks', 'Network / channel <span class="label-note">— original broadcaster</span>')}
                   <div class="chips">
-                    ${m.networks.map((x) => chipHtml(f.networks, 'networks', x.id, x.name, true)).join('')}
-                    ${customNets.map((id) => `<button type="button" class="chip on" data-remove="networks" data-v="${id}">${esc(ed.networkNames[id] || `Network ${id}`)} <span class="x">×</span></button>`).join('')}
+                    ${m.networks.map((x) => pairChip(f, 'networks', x.id, x.name, true)).join('')}
+                    ${customNets.map(([key, id]) => `<button type="button" class="chip ${key === 'networks' ? 'on' : 'not'}" data-remove="${key}" data-v="${id}">${esc(ed.networkNames[id] || `Network ${id}`)} <span class="x">×</span></button>`).join('')}
                   </div>
                   <div class="tag-add">
                     <input class="input" id="net-input" inputmode="numeric" placeholder="Other network ID (from themoviedb.org/network/…)" />
@@ -1529,12 +1591,14 @@ function tmdbFormHtml(ed) {
   const who = `
     ${entityField(ed, {
       type: 'person',
-      keys: ['people'],
+      keys: ['people', 'peopleExclude'],
       label: tv ? 'People' : 'Cast & crew',
       placeholder: 'Actor, director, writer…',
-      hint: tv ? 'Shows any of these people acted in or made.' : 'Films with any of these people.',
+      hint: tv
+        ? 'Included: shows any of them acted in or made. Left out: their shows are dropped.'
+        : 'Included: films with any of them. Left out: their films are dropped.',
     })}
-    ${trending || byPeople ? '' : entityField(ed, { type: 'company', keys: ['companies'], label: 'Production companies', placeholder: 'A24, Pixar, BBC Studios…', hint: 'Any of them.' })}`;
+    ${trending || byPeople ? '' : entityField(ed, { type: 'company', keys: ['companies', 'companiesExclude'], label: 'Production companies', placeholder: 'A24, Pixar, BBC Studios…', hint: 'Included: any of them. Left out: titles from any of them are dropped.' })}`;
 
   const length = `
     ${rangeRow(tv ? 'Episode length' : 'Runtime', 'filters.minRuntime', 'filters.maxRuntime', f, 'minRuntime', 'maxRuntime', 'minutes')}

@@ -25,8 +25,11 @@ const ANIME_BASE = {
   limit: 50,
   genreMatch: 'all',
   streaming: [],
+  streamingExclude: [],
   studios: [],
+  studiosExclude: [],
   people: [],
+  peopleExclude: [],
   minEpisodes: 0,
   maxEpisodes: 0,
   minRuntime: 0,
@@ -44,8 +47,10 @@ const TMDB_BASE = {
   languages: [],
   countries: [],
   providers: [],
+  providersExclude: [],
   region: '',
   networks: [],
+  networksExclude: [],
   tvStatuses: [],
   tvTypes: [],
   keywordsInclude: [],
@@ -57,7 +62,9 @@ const TMDB_BASE = {
   limit: 50,
   genreMatch: 'all',
   companies: [],
+  companiesExclude: [],
   people: [],
+  peopleExclude: [],
   minRuntime: 0,
   maxRuntime: 0,
   minSeasons: 0,
@@ -185,12 +192,15 @@ async function buildAnime(target, filters, ctx) {
     await ensureMapping();
     ctx.mappingReady = true;
   }
-  // People: keep only anime the chosen staff / voice actors worked on.
-  let allowedIds = null;
-  if (filters.people?.length) {
-    allowedIds = new Set();
-    for (const p of filters.people) for (const id of await staffMediaIds(p.id)) allowedIds.add(id);
-  }
+  // People: keep only anime the chosen staff / voice actors worked on, and drop anything a
+  // left-out person worked on.
+  const creditIds = async (people) => {
+    const ids = new Set();
+    for (const p of people) for (const id of await staffMediaIds(p.id)) ids.add(id);
+    return ids;
+  };
+  const allowedIds = filters.people?.length ? await creditIds(filters.people) : null;
+  const blockedIds = filters.peopleExclude?.length ? await creditIds(filters.peopleExclude) : null;
 
   // Age rating: AniList has none, so borrow TMDB's through the id mapping.
   const checks = [];
@@ -238,7 +248,7 @@ async function buildAnime(target, filters, ctx) {
       }
     : null;
 
-  const { media, seasonLabel } = await searchMedia(filters, ctx.settings.seasonRolloverDays, { allowedIds, acceptBatch });
+  const { media, seasonLabel } = await searchMedia(filters, ctx.settings.seasonRolloverDays, { allowedIds, blockedIds, acceptBatch });
   const items = [];
   for (const m of media) {
     const match = await resolveAnime(m, target, ctx);

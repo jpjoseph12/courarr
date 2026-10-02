@@ -165,3 +165,22 @@ test('min rating: titles below the vote minimum are "not rated yet" and kept unl
   assert.ok(passesRating({ vote_count: 0 }, { minRating: 7 }), 'no vote minimum saved: unrated still kept');
   assert.ok(!passesRating({ vote_count: 40, vote_average: 5 }, { minRating: 7 }));
 });
+
+test('leave out: companies, streaming services, networks and people', async () => {
+  const c = client();
+  const p = discoverParams('movie', { ...movieDefaults(), companiesExclude: [{ id: 923 }], providersExclude: [8, 337] }, 'GB').params;
+  assert.equal(p.without_companies, '923');
+  assert.equal(p.without_watch_providers, '8,337');
+  assert.equal(p.watch_region, 'GB', 'leaving a service out still needs a region');
+  assert.equal(p.with_watch_providers, undefined);
+
+  const movies = async (f) => ids(await searchTmdb(c, 'movie', { ...movieDefaults(), ...f }, 'US'));
+  const all = await movies({});
+  assert.deepEqual(await movies({ companiesExclude: [{ id: 923, name: 'Legendary Pictures' }] }), all.filter((id) => ![693134, 438631].includes(id)));
+  assert.deepEqual(await movies({ peopleExclude: [{ id: 2037, name: 'Cillian Murphy' }] }), all.filter((id) => id !== 872585));
+
+  const shows = async (f) => ids(await searchTmdb(c, 'tv', { ...tvDefaults(), ...f }, 'US'));
+  assert.deepEqual(await shows({ networksExclude: [49] }), [1396, 95396, 126308], 'HBO left out');
+  assert.deepEqual(await shows({ peopleExclude: [{ id: 17419, name: 'Bryan Cranston' }] }), [100088, 95396, 126308]);
+  assert.equal(discoverParams('tv', { ...tvDefaults(), networksExclude: [49] }, 'US').params.with_networks, undefined);
+});

@@ -327,6 +327,18 @@ describe('lists', () => {
     assert.deepEqual(await ids({ streaming: [5] }), [101]);
     assert.deepEqual(await ids({ maxEpisodes: 13 }), [101, 102, 103], 'unknown episode count passes');
     assert.deepEqual(await ids({ people: [{ id: 95185, name: 'Kana Hanazawa' }] }), [101, 103]);
+    // Leave out: the opposite sets.
+    assert.deepEqual(await ids({ peopleExclude: [{ id: 95185, name: 'Kana Hanazawa' }] }), [102, 104]);
+    assert.deepEqual(await ids({ studiosExclude: [{ id: 43, name: 'ufotable' }] }), [101, 102, 104]);
+    assert.deepEqual(await ids({ genresExclude: ['Comedy'] }), [102, 103, 104]);
+    // Included and left out at once: leaving out wins, and that's what gets saved.
+    const both = await ok('POST', '/api/lists', {
+      name: 'Both ways', source: 'anilist', target: 'sonarr',
+      filters: { studios: [{ id: 43, name: 'ufotable' }, { id: 569, name: 'MAPPA' }], studiosExclude: [{ id: 43, name: 'ufotable' }], streaming: [5, 10], streamingExclude: [10] },
+    });
+    assert.deepEqual(both.filters.studios.map((x) => x.id), [569]);
+    assert.deepEqual(both.filters.streaming, [5]);
+    await ok('DELETE', `/api/lists/${both.id}`);
     assert.deepEqual(await ids({ countries: ['JP', 'KR'] }), [101, 102, 104]);
     assert.deepEqual(await ids({ sequels: 'only' }), [102]);
     const range = await ok('POST', '/api/preview', {

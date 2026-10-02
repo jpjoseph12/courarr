@@ -25,6 +25,9 @@
   <MinVer>6.12.0</MinVer>
   <Date>2026-10-02</Date>
   <Changes>
+### 1.3.0 (2026-10-02)
+- Include or leave out: genres, tags/keywords, streaming sites and services, TV networks, studios, production companies and people each have an Include / Leave out switch, so you can avoid a studio, network or streaming service.
+
 ### 1.2.0 (2026-10-02)
 - "Keep titles without a score yet" now covers the AniList score and TMDB rating too: shows AniList hasn't scored yet, and titles with fewer TMDB votes than your minimum, are no longer dropped (untick it for the old behaviour).
 - Title cards show "TMDB —" for titles that don't have enough votes yet, and the TMDB vote count.
