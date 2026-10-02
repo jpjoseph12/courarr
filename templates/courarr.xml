@@ -25,6 +25,10 @@
   <MinVer>6.12.0</MinVer>
   <Date>2026-10-02</Date>
   <Changes>
+### 1.2.0 (2026-10-02)
+- "Keep titles without a score yet" now covers the AniList score and TMDB rating too: shows AniList hasn't scored yet, and titles with fewer TMDB votes than your minimum, are no longer dropped (untick it for the old behaviour).
+- Title cards show "TMDB —" for titles that don't have enough votes yet, and the TMDB vote count.
+
 ### 1.1.0 (2026-10-02)
 - IMDb ratings now come from IMDb's own daily ratings file: current, no key or daily limit needed. OMDb is only needed for Rotten Tomatoes and Metacritic.
 - Score filters no longer let through titles whose score couldn't be checked (e.g. OMDb's daily limit reached).

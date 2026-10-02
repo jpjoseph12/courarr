@@ -162,6 +162,10 @@ export function mediaQuery(filters, rolloverDays = 0, at = new Date()) {
   const countries = f.countries || [];
   const anyGenre = f.genreMatch === 'any' && f.genresInclude?.length > 0;
   const studios = new Set((f.studios || []).map((x) => x.id));
+  // AniList's own score filter drops every show it hasn't scored yet (most of a new season),
+  // so with "keep titles without a score yet" the minimum is checked here instead.
+  const minScore = Number(f.minScore) > 0 ? Number(f.minScore) : 0;
+  const localScore = minScore > 0 && f.keepUnscored !== false;
   const vars = {
     ...season.vars,
     format_in: f.formats,
@@ -171,7 +175,7 @@ export function mediaQuery(filters, rolloverDays = 0, at = new Date()) {
     tag_in: f.tagsInclude,
     tag_not_in: f.tagsExclude,
     popularity_greater: Number(f.minPopularity) > 0 ? Number(f.minPopularity) - 1 : undefined,
-    averageScore_greater: Number(f.minScore) > 0 ? Number(f.minScore) - 1 : undefined,
+    averageScore_greater: minScore && !localScore ? minScore - 1 : undefined,
     countryOfOrigin: countries.length === 1 ? countries[0] : undefined,
     licensedById_in: f.streaming,
     sort: [f.sort || 'POPULARITY_DESC', 'ID'],
@@ -186,10 +190,11 @@ export function mediaQuery(filters, rolloverDays = 0, at = new Date()) {
     if (!inRange(m.episodes, f.minEpisodes, f.maxEpisodes)) return false;
     if (!inRange(m.duration, f.minRuntime, f.maxRuntime)) return false;
     if (studios.size && !(m.studios?.nodes || []).some((st) => studios.has(st.id))) return false;
+    if (localScore && m.averageScore != null && m.averageScore < minScore) return false;
     return true;
   };
   const heavyLocal =
-    anyGenre || studios.size > 0 || f.minEpisodes > 0 || f.maxEpisodes > 0 || f.minRuntime > 0 || f.maxRuntime > 0;
+    anyGenre || studios.size > 0 || f.minEpisodes > 0 || f.maxEpisodes > 0 || f.minRuntime > 0 || f.maxRuntime > 0 || localScore;
   return { vars, local, heavyLocal, label: season.label };
 }
 

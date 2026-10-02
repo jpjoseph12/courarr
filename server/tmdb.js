@@ -232,6 +232,21 @@ export function allowedTvTypes(f) {
 
 // ---------- discover ----------
 
+/**
+ * "Keep titles without a score yet" for TMDB ratings: a title with fewer votes than the minimum
+ * (or none) isn't rated yet. Not when ranking by rating or votes, where a few 10/10 votes
+ * would put unknown titles on top.
+ */
+const keepUnrated = (f) => f.minRating > 0 && f.keepUnscored !== false && !['rating', 'votes'].includes(f.sort);
+
+/** The rating and vote minimums. With keepUnrated, titles below the vote minimum pass as not rated yet. */
+export function passesRating(r, f) {
+  const votes = r.vote_count || 0;
+  if (keepUnrated(f) && votes < Math.max(f.minVotes, 1)) return true;
+  if (f.minRating > 0 && (r.vote_average || 0) < f.minRating) return false;
+  return !(f.minVotes > 0 && votes < f.minVotes);
+}
+
 export function discoverParams(kind, f, region, at = new Date()) {
   const date = resolveDateFilter(f.date, kind, kind === 'movie' ? f.releaseType : 'any', at);
   const sort = (SORTS[f.sort] || SORTS.popularity)[kind];
@@ -247,8 +262,9 @@ export function discoverParams(kind, f, region, at = new Date()) {
     without_genres: f.genresExclude.join(','),
     with_original_language: f.languages.join('|'),
     with_origin_country: f.countries.join('|'),
-    'vote_average.gte': f.minRating > 0 ? f.minRating : undefined,
-    'vote_count.gte': f.minVotes > 0 ? f.minVotes : sort.startsWith('vote_average') ? 200 : undefined,
+    // Discover can't say "rated well OR not rated yet", so keepUnrated checks ratings locally.
+    'vote_average.gte': f.minRating > 0 && !keepUnrated(f) ? f.minRating : undefined,
+    'vote_count.gte': keepUnrated(f) ? undefined : f.minVotes > 0 ? f.minVotes : sort.startsWith('vote_average') ? 200 : undefined,
     'with_runtime.gte': f.minRuntime > 0 ? f.minRuntime : undefined,
     'with_runtime.lte': f.maxRuntime > 0 ? f.maxRuntime : undefined,
     with_keywords: (f.keywordsInclude || []).map((k) => k.id).join('|'),
@@ -295,8 +311,6 @@ function passesLocalFilters(r, kind, f, range) {
   if (f.genresExclude.some((g) => genres.includes(g))) return false;
   if (f.languages.length && !f.languages.includes(r.original_language)) return false;
   if (f.countries.length && r.origin_country && !r.origin_country.some((c) => f.countries.includes(c))) return false;
-  if (f.minRating > 0 && (r.vote_average || 0) < f.minRating) return false;
-  if (f.minVotes > 0 && (r.vote_count || 0) < f.minVotes) return false;
   if (range) {
     const d = kind === 'tv' ? r.first_air_date : r.release_date;
     if (!d || d < range.from || d > range.to) return false;
@@ -450,7 +464,8 @@ export async function searchTmdb(client, kind, f, region, { candidates = null, c
     for (const p of f.people) for (const c of await personTvCredits(client, p.id)) if (!seen.has(c.id)) seen.set(c.id, c);
     creditPool = [...seen.values()].sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
   }
-  const maxPages = trending ? 25 : Math.min(Math.ceil(limit / PER_PAGE) + 5, 100);
+  // Ratings checked here (keepUnrated) drop titles discover would have, so look a little further.
+  const maxPages = trending ? 25 : Math.min(Math.ceil(limit / PER_PAGE) * (keepUnrated(f) ? 2 : 1) + 5, 100);
   const pageOf = async (page) => {
     if (creditPool) {
       const results = creditPool.slice((page - 1) * PER_PAGE, page * PER_PAGE);
@@ -471,6 +486,7 @@ export async function searchTmdb(client, kind, f, region, { candidates = null, c
       if (seen.has(r.id) || r.adult) return false;
       seen.add(r.id);
       if ((trending || tvPeople) && !passesLocalFilters(r, kind, f, range)) return false;
+      if (!passesRating(r, f)) return false; // discover applies it too, except with keepUnrated
       return !(f.excludeAnime && looksLikeAnime(r));
     });
     examined += batch.length;

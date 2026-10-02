@@ -79,3 +79,17 @@ test('streaming, studios, episode and runtime bounds', () => {
   // Unannounced episode counts / runtimes pass, so new shows aren't dropped.
   assert.ok(q.local(media({ studios: { nodes: [{ id: 569 }] }, episodes: null, duration: null })));
 });
+
+test('min score: shows AniList hasn’t scored yet are kept unless keepUnscored is off', () => {
+  const keep = mediaQuery({ ...base, minScore: 70 }, 0, at);
+  assert.equal(keep.vars.averageScore_greater, undefined, 'AniList’s own filter would drop unscored shows');
+  assert.equal(keep.heavyLocal, true);
+  assert.ok(keep.local(media({ averageScore: 75 })));
+  assert.ok(keep.local(media({ averageScore: 70 })));
+  assert.ok(!keep.local(media({ averageScore: 69 })));
+  assert.ok(keep.local(media({ averageScore: null })), 'no score yet → kept');
+
+  const strict = mediaQuery({ ...base, minScore: 70, keepUnscored: false }, 0, at);
+  assert.equal(strict.vars.averageScore_greater, 69);
+  assert.equal(strict.heavyLocal, false);
+});

@@ -71,7 +71,13 @@ Every list kind has the same set of filters wherever the data supports it.
 ¹ AniList has no age ratings, so anime lists borrow TMDB's through the ID mapping (needs a TMDB key).
 ² IMDb ratings come from [IMDb's own daily ratings file](https://developer.imdb.com/non-commercial-datasets/), so they're current and need no key. Rotten Tomatoes and Metacritic come from [OMDb](https://www.omdbapi.com) (free key), cached for a week.
 
-Titles with no rating, score, episode count or runtime yet are kept by default, so new releases aren't dropped. For scores this is the **Keep titles without that score yet** box under the score fields. A score Courarr *couldn't check* (for example OMDb's daily limit was reached) never counts as a pass.
+Titles with no rating, score, episode count or runtime yet are kept by default, so new releases aren't dropped. For scores this is the **Keep titles without a score yet** box under the score fields, and it covers every score minimum:
+
+- **AniList score:** AniList shows no score until enough members have rated a show, which early in a season is most of them.
+- **TMDB rating:** a rating only counts once the title has your **Min votes**. Until then the title is *not rated yet*. When ranking by rating or votes, the vote minimum always applies, so a few 10/10 votes can't put an unknown title on top.
+- **IMDb, Rotten Tomatoes, Metacritic:** titles that don't have that score yet.
+
+Untick it to drop unscored titles instead. A score Courarr *couldn't check* (for example OMDb's daily limit was reached) never counts as a pass.
 
 Title cards name every score's source: **AniList** (members' weighted average, %), **TMDB** (TMDB members' plain average, 0–10), **IMDb** (with its vote count), **RT** and **MC**. TMDB's and IMDb's scores are different audiences, so the same title often differs by a few tenths.
 
