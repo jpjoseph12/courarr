@@ -648,9 +648,9 @@ async function viewEditor(id, params, token) {
     }
     if (f === 'filters.maxCertification') renderForm();
     else updateCounts();
-    if (/^filters\.min(Imdb|Rt|Metacritic)$/.test(f)) {
+    if (/^filters\.min(Imdb|Rt|Metacritic|Score|Rating)$/.test(f)) {
       const keep = form.querySelector('#keep-unscored');
-      if (keep) keep.hidden = !(fl.minImdb > 0 || fl.minRt > 0 || fl.minMetacritic > 0);
+      if (keep) keep.hidden = !scoreMinimums(fl);
     }
     if (f === 'filters.region') {
       fl.providers = [];
@@ -1170,9 +1170,21 @@ function scoresFields(ed) {
         <input class="input" type="number" min="0" max="100" data-f="filters.minRt" value="${n(f.minRt) ? esc(f.minRt) : ''}" placeholder="RT % ≥" title="Minimum Rotten Tomatoes critics score" />
         <input class="input" type="number" min="0" max="100" data-f="filters.minMetacritic" value="${n(f.minMetacritic) ? esc(f.minMetacritic) : ''}" placeholder="Metacritic ≥" title="Minimum Metascore" />
       </div>
-      <label class="check" id="keep-unscored"${n(f.minImdb) || n(f.minRt) || n(f.minMetacritic) ? '' : ' hidden'}><input type="checkbox" data-f="filters.keepUnscored"${f.keepUnscored !== false ? ' checked' : ''} />
-        <span><b>Keep titles without that score yet</b><span class="hint">Brand-new releases often have no IMDb rating for a few days, and most TV never gets a Rotten Tomatoes or Metacritic score. Untick to drop them. Scores Courarr couldn’t check (e.g. OMDb’s daily limit) never pass.</span></span></label>
     </div>`;
+}
+
+/** Any score minimum set? (IMDb, RT, Metacritic, plus AniList score or TMDB rating.) */
+const scoreMinimums = (f) => [f.minImdb, f.minRt, f.minMetacritic, f.minScore, f.minRating].some((v) => Number(v) > 0);
+
+/** One switch for every score minimum: what happens to titles nobody has scored yet. */
+function keepUnscoredField(f, source) {
+  const where =
+    source === 'anilist'
+      ? 'AniList shows no score until enough members rate a show — early in a season that’s most of them.'
+      : 'A TMDB rating only counts once the title has your minimum votes; until then it’s not rated yet (except when ranking by rating or votes).';
+  return `
+    <label class="check" id="keep-unscored"${scoreMinimums(f) ? '' : ' hidden'}><input type="checkbox" data-f="filters.keepUnscored"${f.keepUnscored !== false ? ' checked' : ''} />
+      <span><b>Keep titles without a score yet</b><span class="hint">Applies to every score minimum above. ${where} New releases often have no IMDb rating for a few days, and most TV never gets a Rotten Tomatoes or Metacritic score. Untick to drop them. A score Courarr couldn’t check (e.g. OMDb’s daily limit) never passes.</span></span></label>`;
 }
 
 function outputExtras(f) {
@@ -1345,7 +1357,8 @@ function animeFormHtml(ed) {
         <input class="input" id="ed-score" type="number" min="0" max="100" data-f="filters.minScore" value="${esc(f.minScore)}" />
       </div>
     </div>
-    <span class="hint">Popularity = AniList members who added it. Score is 0–100; new shows often have none yet.</span>`;
+    <span class="hint">Popularity = AniList members who added it. Score is AniList members’ weighted average, 0–100.</span>
+    ${keepUnscoredField(f, 'anilist')}`;
 
   const output = `
     <div class="row">
@@ -1545,7 +1558,8 @@ function tmdbFormHtml(ed) {
         <input class="input" id="ed-votes" type="number" min="0" step="10" data-f="filters.minVotes" value="${esc(f.minVotes)}" />
       </div>
     </div>
-    <span class="hint">Rating is TMDB’s 0–10 user score. A vote minimum keeps obscure titles with a handful of 10/10 votes out.</span>`;
+    <span class="hint">Rating is TMDB members’ 0–10 average. Min votes is how many votes a rating needs before it counts, so a handful of 10/10s can’t carry an obscure title.</span>
+    ${keepUnscoredField(f, 'tmdb')}`;
 
   const output = `
     <div class="row">
@@ -1667,13 +1681,20 @@ const shortCount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `
 function scoreText(it, f = {}) {
   const sc = it.scores || {};
   const votes = (n) => (n ? ` (${n.toLocaleString()} votes)` : '');
+  const dash = (label, why) => `<span title="${esc(why)}">${label} <b>—</b></span>`;
+  const kept = '— kept because “Keep titles without a score yet” is on';
   const missing = (k, label, min) =>
-    min > 0 && sc[k] == null
-      ? `<span title="${sc.unchecked?.includes(k) ? `Couldn’t check the ${label} score` : `No ${label} score yet — kept because “Keep titles without that score” is on`}">${label} <b>—</b></span>`
-      : '';
+    min > 0 && sc[k] == null ? dash(label, sc.unchecked?.includes(k) ? `Couldn’t check the ${label} score` : `No ${label} score yet ${kept}`) : '';
+  // A TMDB rating only counts once the title has the list's minimum votes.
+  const needVotes = Math.max(Number(f.minVotes) || 0, 1);
+  const tmdbUnrated = f.minRating > 0 && (it.votes || 0) < needVotes;
   return [
-    it.score ? `<span title="AniList members’ weighted average">AniList <b>${it.score}%</b></span>` : '',
-    it.rating ? `<span title="TMDB user score${votes(it.votes)}">TMDB <b>${it.rating}</b></span>` : '',
+    it.score ? `<span title="AniList members’ weighted average">AniList <b>${it.score}%</b></span>` : f.minScore > 0 ? dash('AniList', `No AniList score yet ${kept}`) : '',
+    tmdbUnrated
+      ? dash('TMDB', `Not rated yet: ${it.votes || 0} of ${needVotes} votes${it.rating ? ` (${it.rating} so far)` : ''} ${kept}`)
+      : it.rating
+        ? `<span title="TMDB user score${votes(it.votes)}">TMDB <b>${it.rating}</b>${it.votes ? ` <small>${shortCount(it.votes)}</small>` : ''}</span>`
+        : '',
     sc.imdb != null
       ? `<span title="IMDb rating${votes(sc.imdbVotes)}">IMDb <b>${sc.imdb}</b>${sc.imdbVotes ? ` <small>${shortCount(sc.imdbVotes)}</small>` : ''}</span>`
       : missing('imdb', 'IMDb', f.minImdb),

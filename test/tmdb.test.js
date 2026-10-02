@@ -7,7 +7,7 @@ import fs from 'node:fs';
 process.env.CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'courarr-tmdb-'));
 process.env.TMDB_BASE_URL = 'http://127.0.0.1:7072/3';
 const { start } = await import('./fixtures/mock-tmdb.mjs');
-const { allowedTvTypes, discoverParams, resolveDateFilter, searchTmdb, tmdbClient, tmdbDetails } = await import('../server/tmdb.js');
+const { allowedTvTypes, discoverParams, passesRating, resolveDateFilter, searchTmdb, tmdbClient, tmdbDetails } = await import('../server/tmdb.js');
 const { DEFAULT_FILTERS, feedFor } = await import('../server/builder.js');
 
 const at = new Date('2026-09-28T12:00:00Z');
@@ -138,4 +138,26 @@ test('Sonarr feed carries TVDB ids only for matched shows', () => {
 
 test('bad key surfaces TMDB’s message', async () => {
   await assert.rejects(tmdbClient('wrong').get('/configuration'), /Invalid API key/);
+});
+
+test('min rating: titles below the vote minimum are "not rated yet" and kept unless keepUnscored is off', async () => {
+  const f = { ...tvDefaults(), minRating: 8.55, minVotes: 3000 };
+  // Breaking Bad 8.9 (15k votes), Last of Us 8.6 (5k), Severance 8.4 (2k), Shōgun 8.5 (1.5k)
+  assert.deepEqual(discoverParams('tv', f, 'US').params['vote_average.gte'], undefined, 'checked locally');
+  assert.deepEqual(discoverParams('tv', f, 'US').params['vote_count.gte'], undefined);
+  assert.deepEqual(ids(await searchTmdb(client(), 'tv', f, 'US')), [1396, 100088, 95396, 126308]);
+  assert.deepEqual(ids(await searchTmdb(client(), 'tv', { ...f, minRating: 8.7 }, 'US')), [1396, 95396, 126308], 'rated below the bar: dropped');
+
+  const strict = { ...f, keepUnscored: false };
+  assert.equal(discoverParams('tv', strict, 'US').params['vote_average.gte'], 8.55);
+  assert.equal(discoverParams('tv', strict, 'US').params['vote_count.gte'], 3000);
+  assert.deepEqual(ids(await searchTmdb(client(), 'tv', strict, 'US')), [1396, 100088]);
+
+  // Ranking by rating keeps the vote floor, or a few 10/10 votes would top the list.
+  const byRating = { ...f, sort: 'rating' };
+  assert.equal(discoverParams('tv', byRating, 'US').params['vote_count.gte'], 3000);
+  assert.deepEqual(ids(await searchTmdb(client(), 'tv', byRating, 'US')), [1396, 100088]);
+
+  assert.ok(passesRating({ vote_count: 0 }, { minRating: 7, minVotes: 0 }), 'no votes at all → not rated yet');
+  assert.ok(!passesRating({ vote_count: 3, vote_average: 9 }, { minRating: 0, minVotes: 10 }), 'votes alone stay a hard minimum');
 });
