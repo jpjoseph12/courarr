@@ -160,4 +160,8 @@ test('min rating: titles below the vote minimum are "not rated yet" and kept unl
 
   assert.ok(passesRating({ vote_count: 0 }, { minRating: 7, minVotes: 0 }), 'no votes at all → not rated yet');
   assert.ok(!passesRating({ vote_count: 3, vote_average: 9 }, { minRating: 0, minVotes: 10 }), 'votes alone stay a hard minimum');
+  // Missing values (e.g. a list saved by an older version) never throw or misfire.
+  assert.ok(passesRating({}, {}));
+  assert.ok(passesRating({ vote_count: 0 }, { minRating: 7 }), 'no vote minimum saved: unrated still kept');
+  assert.ok(!passesRating({ vote_count: 40, vote_average: 5 }, { minRating: 7 }));
 });
