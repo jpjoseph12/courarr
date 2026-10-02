@@ -138,6 +138,7 @@ query (
       averageScore popularity genres countryOfOrigin siteUrl
       coverImage { large color }
       studios(isMain: true) { nodes { id name } }
+      externalLinks { siteId }
       relations {
         edges {
           relationType
@@ -162,6 +163,9 @@ export function mediaQuery(filters, rolloverDays = 0, at = new Date()) {
   const countries = f.countries || [];
   const anyGenre = f.genreMatch === 'any' && f.genresInclude?.length > 0;
   const studios = new Set((f.studios || []).map((x) => x.id));
+  const studiosOut = new Set((f.studiosExclude || []).map((x) => x.id));
+  // AniList can only filter streaming sites in; leaving one out is checked against each show's links.
+  const streamingOut = new Set(f.streamingExclude || []);
   // AniList's own score filter drops every show it hasn't scored yet (most of a new season),
   // so with "keep titles without a score yet" the minimum is checked here instead.
   const minScore = Number(f.minScore) > 0 ? Number(f.minScore) : 0;
@@ -190,29 +194,39 @@ export function mediaQuery(filters, rolloverDays = 0, at = new Date()) {
     if (!inRange(m.episodes, f.minEpisodes, f.maxEpisodes)) return false;
     if (!inRange(m.duration, f.minRuntime, f.maxRuntime)) return false;
     if (studios.size && !(m.studios?.nodes || []).some((st) => studios.has(st.id))) return false;
+    if (studiosOut.size && (m.studios?.nodes || []).some((st) => studiosOut.has(st.id))) return false;
+    if (streamingOut.size && (m.externalLinks || []).some((l) => streamingOut.has(l.siteId))) return false;
     if (localScore && m.averageScore != null && m.averageScore < minScore) return false;
     return true;
   };
   const heavyLocal =
-    anyGenre || studios.size > 0 || f.minEpisodes > 0 || f.maxEpisodes > 0 || f.minRuntime > 0 || f.maxRuntime > 0 || localScore;
+    anyGenre ||
+    studios.size > 0 ||
+    studiosOut.size > 0 ||
+    streamingOut.size > 0 ||
+    f.minEpisodes > 0 ||
+    f.maxEpisodes > 0 ||
+    f.minRuntime > 0 ||
+    f.maxRuntime > 0 ||
+    localScore;
   return { vars, local, heavyLocal, label: season.label };
 }
 
 /**
  * Runs a list's filters against AniList and returns raw media, capped at filters.limit.
- * `allowedIds` (people filter) and `acceptBatch` (async checks such as age rating, run
- * once per page) narrow the results further.
+ * `allowedIds` / `blockedIds` (people included / left out) and `acceptBatch` (async checks such
+ * as age rating, run once per page) narrow the results further.
  */
-export async function searchMedia(filters, rolloverDays, { allowedIds = null, acceptBatch = null } = {}) {
+export async function searchMedia(filters, rolloverDays, { allowedIds = null, blockedIds = null, acceptBatch = null } = {}) {
   const { vars, local, heavyLocal, label } = mediaQuery(filters, rolloverDays);
   const limit = Math.min(Math.max(Number(filters.limit) || 50, 1), 500);
-  const maxPages = heavyLocal || allowedIds || acceptBatch ? MAX_PAGES_LOCAL : MAX_PAGES;
+  const maxPages = heavyLocal || allowedIds || blockedIds || acceptBatch ? MAX_PAGES_LOCAL : MAX_PAGES;
   const out = [];
   for (let page = 1; page <= maxPages && out.length < limit; page++) {
     const data = await gql(MEDIA_QUERY, { ...vars, page, perPage: PER_PAGE });
     let batch = data.Page.media.filter((m) => {
       m.isSequel = m.relations.edges.some((e) => e.relationType === 'PREQUEL' && e.node.type === 'ANIME');
-      return (!allowedIds || allowedIds.has(m.id)) && local(m);
+      return (!allowedIds || allowedIds.has(m.id)) && !blockedIds?.has(m.id) && local(m);
     });
     if (acceptBatch && batch.length) {
       const ok = await acceptBatch(batch);

@@ -66,6 +66,7 @@ function commonFilters(f) {
   return {
     genreMatch: f.genreMatch === 'any' ? 'any' : 'all',
     people: keywordList(f.people),
+    peopleExclude: keywordList(f.peopleExclude),
     minRuntime: clampInt(f.minRuntime, 0, 1000, 0),
     maxRuntime: clampInt(f.maxRuntime, 0, 1000, 0),
     minEpisodes: clampInt(f.minEpisodes, 0, 10000, 0),
@@ -98,7 +99,9 @@ function sanitizeAnimeFilters(f, target) {
   return {
     ...commonFilters(f),
     streaming: intList(f.streaming),
+    streamingExclude: intList(f.streamingExclude),
     studios: keywordList(f.studios),
+    studiosExclude: keywordList(f.studiosExclude),
     keepUnrated: f.keepUnrated !== false,
     ...(target === 'sonarr' ? { seriesType: f.seriesType === 'standard' ? 'standard' : 'anime' } : {}),
     season,
@@ -130,6 +133,7 @@ function sanitizeTmdbFilters(f, target) {
   return {
     ...commonFilters(f),
     companies: keywordList(f.companies),
+    companiesExclude: keywordList(f.companiesExclude),
     keepUnrated: !!f.keepUnrated,
     ...(tv
       ? {
@@ -153,8 +157,10 @@ function sanitizeTmdbFilters(f, target) {
     languages: strList(f.languages).map((c) => c.toLowerCase()).filter((c) => /^[a-z]{2}$/.test(c)),
     countries: strList(f.countries).map((c) => c.toUpperCase()).filter((c) => /^[A-Z]{2}$/.test(c)),
     providers: intList(f.providers),
+    providersExclude: intList(f.providersExclude),
     region: /^[A-Z]{2}$/.test(String(f.region || '').toUpperCase()) ? String(f.region).toUpperCase() : '',
     networks: tv ? intList(f.networks) : [],
+    networksExclude: tv ? intList(f.networksExclude) : [],
     tvStatuses: tv ? intList(f.tvStatuses).filter((n) => n <= 5) : [],
     tvTypes: tv ? intList(f.tvTypes).filter((n) => n <= 6) : [],
     keywordsInclude: keywordList(f.keywordsInclude),
@@ -168,8 +174,32 @@ function sanitizeTmdbFilters(f, target) {
   };
 }
 
+/** Include / leave-out pairs. */
+const PAIRS = [
+  ['genresInclude', 'genresExclude'],
+  ['tagsInclude', 'tagsExclude'],
+  ['keywordsInclude', 'keywordsExclude'],
+  ['people', 'peopleExclude'],
+  ['studios', 'studiosExclude'],
+  ['companies', 'companiesExclude'],
+  ['streaming', 'streamingExclude'],
+  ['providers', 'providersExclude'],
+  ['networks', 'networksExclude'],
+];
+
+/** Something can't be both included and left out: leaving it out wins. */
+function settlePairs(f) {
+  const idOf = (x) => x?.id ?? x;
+  for (const [inc, exc] of PAIRS) {
+    if (!f[inc]?.length || !f[exc]?.length) continue;
+    const out = new Set(f[exc].map(idOf));
+    f[inc] = f[inc].filter((x) => !out.has(idOf(x)));
+  }
+  return f;
+}
+
 const sanitizeFilters = (source, f = {}, target) =>
-  source === 'tmdb' ? sanitizeTmdbFilters(f, target) : sanitizeAnimeFilters(f, target);
+  settlePairs(source === 'tmdb' ? sanitizeTmdbFilters(f, target) : sanitizeAnimeFilters(f, target));
 
 const slugify = (s) =>
   String(s)

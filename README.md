@@ -49,17 +49,17 @@ Each list can use its own root folder, e.g. `/tv/anime`, `/tv` and `/tv/daily`.
 
 ### Filters
 
-Every list kind has the same set of filters wherever the data supports it.
+Every list kind has the same set of filters wherever the data supports it. Pickers marked **±** can **include** or **leave out**: flip the field's *Include / Leave out* switch (or use the matching button by a search box), then click. Titles matching anything left out are dropped, and leaving something out always beats including it.
 
 | | Anime → Sonarr | Anime → Radarr | TV → Sonarr | Movies → Radarr |
 |---|---|---|---|---|
 | **When**: this/next/last season, a year, a **year range** (with decade buttons), last N years/days, next N days | ✓ | ✓ | ✓ plus "airing this week" | ✓ plus digital vs cinema release |
-| **Genres**: require or exclude, match **all or any** | ✓ | ✓ | ✓ | ✓ |
-| Tags / keywords | ✓ | ✓ | ✓ | ✓ |
-| **Where to watch** | streaming site (Crunchyroll, HIDIVE…) | same | streaming service by region, **network / channel** | streaming service by region |
+| **Genres** ±, included genres match **all or any** | ✓ | ✓ | ✓ | ✓ |
+| Tags / keywords ± | ✓ | ✓ | ✓ | ✓ |
+| **Where to watch** ± | streaming site (Crunchyroll, HIDIVE…) | same | streaming service by region, **network / channel** | streaming service by region |
 | **Original language / country** | country | country | ✓ | ✓ |
-| **People** | staff & voice actors | same | cast & crew (via their credits) | cast & crew |
-| **Studios / companies** | animation studio | same | production company | production company |
+| **People** ± | staff & voice actors | same | cast & crew (via their credits) | cast & crew |
+| **Studios / companies** ± | animation studio | same | production company | production company |
 | **Runtime** | per episode | film length | per episode | film length |
 | **Episodes / seasons** | episodes | – | seasons & episodes, "has an upcoming episode" | – |
 | **Age rating** (max for your region, optionally keep unrated) | via TMDB¹ | via TMDB¹ | ✓ | ✓ |

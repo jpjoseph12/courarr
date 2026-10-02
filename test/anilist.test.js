@@ -93,3 +93,13 @@ test('min score: shows AniList hasn’t scored yet are kept unless keepUnscored 
   assert.equal(strict.vars.averageScore_greater, 69);
   assert.equal(strict.heavyLocal, false);
 });
+
+test('leave out: studios and streaming sites are checked per show', () => {
+  const q = mediaQuery({ ...base, studiosExclude: [{ id: 569, name: 'MAPPA' }], streamingExclude: [5] }, 0, at);
+  assert.equal(q.vars.licensedById_in, undefined);
+  assert.equal(q.heavyLocal, true);
+  assert.ok(q.local(media({ studios: { nodes: [{ id: 1 }] }, externalLinks: [{ siteId: 10 }] })));
+  assert.ok(!q.local(media({ studios: { nodes: [{ id: 569 }] } })), 'MAPPA left out');
+  assert.ok(!q.local(media({ externalLinks: [{ siteId: 5 }, { siteId: 10 }] })), 'on Crunchyroll: left out');
+  assert.ok(q.local(media({ externalLinks: null })), 'no links: kept');
+});
