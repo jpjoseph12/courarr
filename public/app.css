@@ -420,6 +420,7 @@ details.form-sec.sec { display: block; padding: 0; }
 
 .item-scores { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
 .item-scores b { color: var(--text); font-weight: 650; }
+.item-scores small { color: var(--faint); font-size: 10.5px; }
 .notifier { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; display: flex; flex-direction: column; gap: 10px; background: var(--bg); }
 .mt-cols { display: flex; flex-direction: column; gap: 8px; }
 .check.disabled { opacity: 0.5; }

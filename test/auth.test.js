@@ -11,6 +11,7 @@ import { API_KEY, startArr } from './fixtures/mock-arr.mjs';
 
 const CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'courarr-auth-'));
 process.env.CONFIG_DIR = CONFIG_DIR;
+process.env.IMDB_RATINGS_URL = 'off'; // never download the real file in tests
 
 const auth = await import('../server/auth.js');
 const store = await import('../server/db.js');
