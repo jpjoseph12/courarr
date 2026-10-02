@@ -10,6 +10,7 @@ import {
   DEFAULT_FILTERS, SERIES_TYPE, SOURCES, buildItems, createContext, feedFor, isRunning, refresh, seriesTypeFor,
 } from './builder.js';
 import { ensureMapping, mappingInfo } from './mapping.js';
+import { ensureImdb, imdbInfo } from './imdb.js';
 import {
   MOVIE_STATUSES, SORTS as TMDB_SORTS, getTmdbMeta, networkName, resolveDateFilter, searchTmdbEntity, tmdbClient,
 } from './tmdb.js';
@@ -446,6 +447,7 @@ app.get('/api/status', (_req, res) => {
     nextRun: nextRun(),
     running: isRunning(),
     mapping: mappingInfo(),
+    imdb: imdbInfo(),
     lastRun: store.listRuns(1)[0] || null,
     currentSeason: resolveSeasonFilter({ mode: 'current' }, s.seasonRolloverDays).label,
     nextSeason: resolveSeasonFilter({ mode: 'next' }, s.seasonRolloverDays).label,
@@ -804,6 +806,11 @@ app.post('/api/notify/test', async (req, res) => {
   } catch (e) {
     res.json({ ok: false, error: causeOf(e) });
   }
+});
+
+app.post('/api/imdb/update', async (_req, res) => {
+  await ensureImdb({ force: true });
+  res.json(imdbInfo());
 });
 
 app.post('/api/mapping/update', async (_req, res) => {

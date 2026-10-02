@@ -6,6 +6,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 
 import { control as anilistControl, startAniList } from './fixtures/mock-anilist.mjs';
 import { API_KEY, startArr } from './fixtures/mock-arr.mjs';
@@ -24,7 +25,22 @@ let sink;
 before(async () => {
   const anilist = await startAniList(0);
   const tmdb = await startTmdb(0);
+  // IMDb's daily ratings file. tt0000103 is 7.2 here but 6.1 on OMDb: the file is fresher and wins.
+  const ratings = zlib.gzipSync(
+    [
+      ['tconst', 'averageRating', 'numVotes'],
+      ['tt0000101', 8.9, 12000],
+      ['tt0000103', 7.2, 300],
+      ['tt15239678', 8.5, 700000],
+      ['tt15398776', 8.3, 900000],
+      ['tt1160419', 8.0, 1000000],
+      ['tt22022452', 7.5, 200000],
+    ]
+      .map((r) => r.join('\t'))
+      .join('\n'),
+  );
   const omdb = http.createServer((req, res) => {
+    if (req.url.startsWith('/title.ratings')) return res.end(ratings);
     const q = new URL(req.url, 'http://x').searchParams;
     res.setHeader('Content-Type', 'application/json');
     if (q.get('apikey') !== 'omdb') return res.end(JSON.stringify({ Response: 'False', Error: 'Invalid API key!' }));
@@ -49,6 +65,7 @@ before(async () => {
   process.env.MAPPING_URL = `${url(anilist)}/mapping.json`;
   process.env.TMDB_BASE_URL = `${url(tmdb)}/3`;
   process.env.OMDB_BASE_URL = url(omdb);
+  process.env.IMDB_RATINGS_URL = `${url(omdb)}/title.ratings.tsv.gz`;
   anilistControl.mappingFails = false;
 
   const { app } = await import('../server/app.js');
@@ -330,6 +347,11 @@ describe('lists', () => {
     const pv = (filters) => ok('POST', '/api/preview', { source: 'anilist', target: 'sonarr', filters: { season: { mode: 'none' }, formats: ['TV'], countries: [], ...filters } });
     assert.deepEqual((await pv({ minRt: 90, keepUnscored: false })).items.map((i) => i.anilistId), [101]);
     assert.deepEqual((await pv({ minImdb: 6, keepUnscored: true })).items.map((i) => i.anilistId), [101, 102, 103, 104]);
+    // IMDb ratings come from IMDb's own file (7.2), not OMDb's older copy (6.1).
+    const imdb7 = await pv({ minImdb: 7, keepUnscored: false });
+    assert.deepEqual(imdb7.items.map((i) => i.anilistId), [101, 103]);
+    assert.deepEqual([imdb7.items[1].scores.imdb, imdb7.items[1].scores.imdbVotes], [7.2, 300]);
+    assert.deepEqual((await pv({ minImdb: 8 })).items.map((i) => i.anilistId), [101, 102, 104], 'below the minimum is dropped; no score yet is kept');
     // No TMDB rating for these anime: kept only with keepUnrated.
     assert.equal((await pv({ maxCertification: '15', keepUnrated: false })).items.length, 0);
     assert.equal((await pv({ maxCertification: '15', keepUnrated: true })).items.length, 4);
@@ -425,6 +447,26 @@ describe('TV & movie lists', () => {
     const trending = await ok('POST', '/api/preview', { source: 'tmdb', target: 'radarr', filters: { collection: 'trending', date: { mode: 'any' }, releaseType: 'any', minRuntime: 150 } });
     assert.match(trending.label, /^Trending/);
     assert.ok(trending.items.every((i) => i.runtime >= 150));
+  });
+
+  test('IMDb filter: works without an OMDb key; RT/Metacritic say they need one', async () => {
+    const status = await ok('GET', '/api/status');
+    assert.ok(status.imdb.titles >= 6, 'ratings file loaded');
+    assert.equal((await ok('POST', '/api/imdb/update')).error, null);
+    await ok('PUT', '/api/settings', { clearOmdbApiKey: true });
+    try {
+      const mv = (filters) => ok('POST', '/api/preview', { source: 'tmdb', target: 'radarr', filters: { minVotes: 0, date: { mode: 'any' }, releaseType: 'any', ...filters } });
+      const all = await mv({});
+      assert.equal(all.items.find((i) => i.key === 872585).scores.imdb, 8.3, 'IMDb on cards without OMDb');
+      const good = await mv({ minImdb: 8.2, keepUnscored: false });
+      assert.deepEqual(good.items.map((i) => i.key).sort(), [693134, 872585]);
+      assert.ok(!good.warnings.some((w) => /OMDb/.test(w)));
+      const rt = await mv({ minRt: 90 });
+      assert.equal(rt.items.length, all.items.length, 'RT filter skipped');
+      assert.ok(rt.warnings.some((w) => /Rotten Tomatoes \/ Metacritic filters skipped/.test(w)));
+    } finally {
+      await ok('PUT', '/api/settings', { omdbApiKey: 'omdb' });
+    }
   });
 
   test('new on my services: needs providers, tracks the catalogue, resets when its scope changes', async () => {

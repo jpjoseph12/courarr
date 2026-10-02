@@ -1,5 +1,6 @@
 import * as store from './db.js';
 import { log } from './config.js';
+import { imdbRatings } from './imdb.js';
 
 // OMDb gives IMDb, Rotten Tomatoes and Metacritic scores in one call per IMDb id.
 // OMDB_BASE_URL lets tests point at a local mock.
@@ -59,35 +60,61 @@ async function pool(items, size, fn) {
   );
 }
 
-/** IMDb id -> { imdb, imdbVotes, rt, metacritic }, cached in SQLite. Warnings go to `warn`. */
-export async function scoresFor(client, imdbIds, warn = () => {}) {
+const OMDB_KEYS = ['imdb', 'rt', 'metacritic'];
+
+/**
+ * IMDb id -> { imdb, imdbVotes, rt, metacritic }. OMDb answers are cached in SQLite; the IMDb
+ * rating itself comes from IMDb's daily ratings file when that's loaded (fresher than OMDb's).
+ * Titles OMDb couldn't be asked about (quota, outage) carry `unchecked: [keys]`, so filters can
+ * tell "no score yet" from "couldn't look". Warnings go to `warn`.
+ * `omdb: false` skips OMDb when only the IMDb rating is wanted.
+ */
+export async function scoresFor(client, imdbIds, warn = () => {}, { omdb = true } = {}) {
+  const ids = [...new Set(imdbIds.filter(Boolean))];
   const out = new Map();
   const todo = [];
-  for (const id of new Set(imdbIds.filter(Boolean))) {
+  for (const id of omdb ? ids : []) {
     const c = store.getOmdb(id);
     const age = c ? Date.now() - new Date(c.fetched_at).getTime() : Infinity;
     if (c && age < (hasAny(c.data) ? MAX_AGE_MS : EMPTY_MAX_AGE_MS)) out.set(id, c.data);
-    else todo.push(id);
+    else if (client) todo.push(id);
   }
-  if (!client) return out;
   await pool(todo, 4, async (id) => {
     try {
       const body = await client.get(id);
-      if (!body) return;
+      if (!body) throw new Error('OMDb daily request limit reached');
       const s = summariseOmdb(body);
       store.saveOmdb(id, s);
       out.set(id, s);
     } catch (e) {
       warn(e.message);
       log(`OMDb ${id}: ${e.message}`);
+      // An older answer beats none; with nothing at all, say so rather than "no score".
+      out.set(id, store.getOmdb(id)?.data || { imdb: null, imdbVotes: null, rt: null, metacritic: null, unchecked: OMDB_KEYS });
     }
   });
+
+  const imdb = imdbRatings(ids);
+  if (imdb) {
+    for (const id of ids) {
+      const prev = out.get(id);
+      // Missing from IMDb's file means IMDb has no rating for it yet.
+      const s = { rt: null, metacritic: null, ...prev, ...(imdb.get(id) || { imdb: null, imdbVotes: null }) };
+      const unchecked = prev?.unchecked?.filter((k) => k !== 'imdb');
+      if (unchecked?.length) s.unchecked = unchecked;
+      else delete s.unchecked;
+      out.set(id, s);
+    }
+  }
   return out;
 }
 
 export const hasScoreFilter = (f) => f.minImdb > 0 || f.minRt > 0 || f.minMetacritic > 0;
 
-/** Score filter: every set minimum must be met; missing scores pass only with keepUnscored. */
+/**
+ * Score filter: every set minimum must be met. A title with no score passes only with
+ * keepUnscored; one whose score couldn't be checked (OMDb quota or outage) never does.
+ */
 export function scoreCheck(f) {
   const checks = [
     ['imdb', f.minImdb],
@@ -97,6 +124,8 @@ export function scoreCheck(f) {
   return (s) =>
     checks.every(([k, min]) => {
       const v = s?.[k];
-      return v == null ? f.keepUnscored !== false : v >= min;
+      if (v != null) return v >= min;
+      if (s?.unchecked?.includes(k)) return false;
+      return f.keepUnscored !== false;
     });
 }

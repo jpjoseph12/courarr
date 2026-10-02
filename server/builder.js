@@ -3,6 +3,7 @@ import { arrClient, lookupByTitle } from './arr.js';
 import { ensureMapping, lookupMapping } from './mapping.js';
 import { certificationCheck, posterUrl, rememberTvdb, scanCatalogue, searchTmdb, tmdbClient, tmdbDetails } from './tmdb.js';
 import { hasScoreFilter, omdbClient, scoreCheck, scoresFor } from './omdb.js';
+import { ensureImdb, imdbInfo } from './imdb.js';
 import { ignoreIndex, ignoredReason, maintainerrClient, syncMaintainerr } from './maintainerr.js';
 import { notifyAll } from './notify.js';
 import * as store from './db.js';
@@ -223,17 +224,8 @@ async function buildAnime(target, filters, ctx) {
     }
   }
   // Critic / audience scores, via the IMDb id in the mapping.
-  if (hasScoreFilter(filters)) {
-    if (!ctx.omdb) ctx.warnings.add('Score filters skipped: they need an OMDb API key (Settings)');
-    else {
-      const ok = scoreCheck(filters);
-      checks.push(async (batch) => {
-        const imdb = batch.map((m) => lookupMapping(m.id)?.imdbId || null);
-        const scores = await scoresFor(ctx.omdb, imdb, (w) => ctx.warnings.add(w));
-        return batch.map((_, i) => ok(imdb[i] ? scores.get(imdb[i]) : null));
-      });
-    }
-  }
+  const scoreOk = await scoreFilter(filters, ctx);
+  if (scoreOk) checks.push((batch) => scoreOk(batch.map((m) => lookupMapping(m.id)?.imdbId || null)));
   const acceptBatch = checks.length
     ? async (batch) => {
         let ok = batch.map(() => true);
@@ -318,23 +310,12 @@ async function buildTmdb(target, filters, ctx, opts = {}) {
   const region = filters.region || ctx.settings.tmdbRegion || 'US';
   const arr = filters.collection === 'arrivals' ? await arrivals(kind, filters, region, ctx, opts) : null;
 
-  let acceptBatch = null;
-  if (hasScoreFilter(filters)) {
-    if (!ctx.omdb) ctx.warnings.add('Score filters skipped: they need an OMDb API key (Settings)');
-    else {
-      const ok = scoreCheck(filters);
-      acceptBatch = async (batch, details) => {
-        const imdb = batch.map((r) => details.get(r.id)?.imdbId || null);
-        const scores = await scoresFor(ctx.omdb, imdb, (w) => ctx.warnings.add(w));
-        return batch.map((_, i) => ok(imdb[i] ? scores.get(imdb[i]) : null));
-      };
-    }
-  }
-  const { results, details, label } = await searchTmdb(ctx.tmdb, kind, filters, region, {
+  const scoreOk = await scoreFilter(filters, ctx);
+  let { results, details, label } = await searchTmdb(ctx.tmdb, kind, filters, region, {
     candidates: arr?.candidates || null,
     candidateLabel: arr?.label,
-    needImdb: !!ctx.omdb, // IMDb ids let scores show on every title
-    acceptBatch,
+    needImdb: !!ctx.omdb || !!scoreOk || imdbOn(), // IMDb ids let scores show on every title
+    acceptBatch: scoreOk && ((batch, details) => scoreOk(batch.map((r) => details.get(r.id)?.imdbId || null))),
   });
   const tvIds = new Map(results.map((r) => [r.id, details.get(r.id) || {}]));
 
@@ -357,6 +338,14 @@ async function buildTmdb(target, filters, ctx, opts = {}) {
         /* leave it TMDB-only; the next refresh tries again */
       }
     }
+  }
+
+  // Shows whose IMDb id only Sonarr knew went through the score check without one.
+  const lateImdb = scoreOk ? results.filter((r) => viaSonarr.has(r.id) && !details.get(r.id)?.imdbId && tvIds.get(r.id).imdbId) : [];
+  if (lateImdb.length) {
+    const ok = await scoreOk(lateImdb.map((r) => tvIds.get(r.id).imdbId));
+    const drop = new Set(lateImdb.filter((_, i) => !ok[i]).map((r) => r.id));
+    results = results.filter((r) => !drop.has(r.id));
   }
 
   const items = results.map((r) => {
@@ -397,9 +386,33 @@ async function buildTmdb(target, filters, ctx, opts = {}) {
   return { items, label };
 }
 
-/** Adds IMDb / RT / Metacritic scores to items for display (cached; needs an OMDb key). */
+const imdbOn = () => imdbInfo().titles > 0;
+
+/**
+ * The list's IMDb / RT / Metacritic minimums as a batch check (IMDb ids -> booleans), or null
+ * when none apply. IMDb ratings come from IMDb's daily file, so that filter needs no OMDb key.
+ */
+async function scoreFilter(filters, ctx) {
+  if (!hasScoreFilter(filters)) return null;
+  const imdbReady = filters.minImdb > 0 && (await ensureImdb());
+  let f = filters;
+  if (!ctx.omdb) {
+    if (f.minRt > 0 || f.minMetacritic > 0) ctx.warnings.add('Rotten Tomatoes / Metacritic filters skipped: they need an OMDb API key (Settings)');
+    if (f.minImdb > 0 && !imdbReady) ctx.warnings.add('IMDb filter skipped: IMDb’s ratings file isn’t available yet and there’s no OMDb key (Settings)');
+    f = { ...f, minImdb: imdbReady ? f.minImdb : 0, minRt: 0, minMetacritic: 0 };
+    if (!hasScoreFilter(f)) return null;
+  }
+  const ok = scoreCheck(f);
+  const omdb = f.minRt > 0 || f.minMetacritic > 0 || (f.minImdb > 0 && !imdbReady);
+  return async (imdbIds) => {
+    const scores = await scoresFor(ctx.omdb, imdbIds, (w) => ctx.warnings.add(w), { omdb });
+    return imdbIds.map((id) => ok(id ? scores.get(id) : null));
+  };
+}
+
+/** Adds IMDb / RT / Metacritic scores to items for display (OMDb cached; IMDb from its daily file). */
 async function attachScores(items, ctx) {
-  if (!ctx.omdb) return;
+  if (!ctx.omdb && !imdbOn()) return;
   const scores = await scoresFor(ctx.omdb, items.map((i) => i.imdbId), (w) => ctx.warnings.add(w));
   for (const it of items) {
     const sc = it.imdbId && scores.get(it.imdbId);
@@ -529,6 +542,7 @@ async function doRefresh(listIds, trigger) {
       }
     }
 
+    await ensureImdb({ wait: true }); // today's IMDb ratings, if they're due
     const ctx = await createContext();
     const touched = new Set();
     const notifications = [];

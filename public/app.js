@@ -648,6 +648,10 @@ async function viewEditor(id, params, token) {
     }
     if (f === 'filters.maxCertification') renderForm();
     else updateCounts();
+    if (/^filters\.min(Imdb|Rt|Metacritic)$/.test(f)) {
+      const keep = form.querySelector('#keep-unscored');
+      if (keep) keep.hidden = !(fl.minImdb > 0 || fl.minRt > 0 || fl.minMetacritic > 0);
+    }
     if (f === 'filters.region') {
       fl.providers = [];
       await loadTmeta();
@@ -1157,23 +1161,17 @@ function scoresFields(ed) {
   const has = state.settings?.omdbApiKeySet;
   return `
     <div class="field">
-      <span class="label">Critic & audience scores <span class="label-note">— via OMDb</span></span>
-      ${
-        has
-          ? ''
-          : '<span class="hint">Add a free OMDb key in <a href="#/settings">Settings</a> to use these (and to see scores on every title).</span>'
-      }
+      <span class="label">Critic & audience scores</span>
+      <span class="hint">IMDb ratings come from IMDb’s own daily ratings file, so they’re current and need no key.${
+        has ? '' : ' Rotten Tomatoes and Metacritic need a free OMDb key in <a href="#/settings">Settings</a>.'
+      }</span>
       <div class="row">
         <input class="input" type="number" min="0" max="10" step="0.1" data-f="filters.minImdb" value="${n(f.minImdb) ? esc(f.minImdb) : ''}" placeholder="IMDb ≥" title="Minimum IMDb rating (0–10)" />
         <input class="input" type="number" min="0" max="100" data-f="filters.minRt" value="${n(f.minRt) ? esc(f.minRt) : ''}" placeholder="RT % ≥" title="Minimum Rotten Tomatoes critics score" />
         <input class="input" type="number" min="0" max="100" data-f="filters.minMetacritic" value="${n(f.minMetacritic) ? esc(f.minMetacritic) : ''}" placeholder="Metacritic ≥" title="Minimum Metascore" />
       </div>
-      ${
-        n(f.minImdb) || n(f.minRt) || n(f.minMetacritic)
-          ? `<label class="check"><input type="checkbox" data-f="filters.keepUnscored"${f.keepUnscored !== false ? ' checked' : ''} />
-              <span><b>Keep titles without that score</b><span class="hint">New releases and most TV often have no Rotten Tomatoes or Metacritic score yet.</span></span></label>`
-          : ''
-      }
+      <label class="check" id="keep-unscored"${n(f.minImdb) || n(f.minRt) || n(f.minMetacritic) ? '' : ' hidden'}><input type="checkbox" data-f="filters.keepUnscored"${f.keepUnscored !== false ? ' checked' : ''} />
+        <span><b>Keep titles without that score yet</b><span class="hint">Brand-new releases often have no IMDb rating for a few days, and most TV never gets a Rotten Tomatoes or Metacritic score. Untick to drop them. Scores Courarr couldn’t check (e.g. OMDb’s daily limit) never pass.</span></span></label>
     </div>`;
 }
 
@@ -1663,12 +1661,27 @@ function resultsHtml(ed) {
     ${shown.length ? `<div class="grid">${shown.map((it) => itemHtml(it, items.indexOf(it), ed)).join('')}</div>` : '<div class="empty"><p>Nothing here.</p></div>'}`;
 }
 
-function scoreText(sc) {
+const shortCount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+
+/** Every score a title has, named by source. A score the list filters on but the title lacks shows as "—". */
+function scoreText(it, f = {}) {
+  const sc = it.scores || {};
+  const votes = (n) => (n ? ` (${n.toLocaleString()} votes)` : '');
+  const missing = (k, label, min) =>
+    min > 0 && sc[k] == null
+      ? `<span title="${sc.unchecked?.includes(k) ? `Couldn’t check the ${label} score` : `No ${label} score yet — kept because “Keep titles without that score” is on`}">${label} <b>—</b></span>`
+      : '';
   return [
-    sc.imdb != null ? `<span title="IMDb rating">IMDb <b>${sc.imdb}</b></span>` : '',
-    sc.rt != null ? `<span title="Rotten Tomatoes critics">RT <b>${sc.rt}%</b></span>` : '',
-    sc.metacritic != null ? `<span title="Metascore">MC <b>${sc.metacritic}</b></span>` : '',
-  ].filter(Boolean).join('');
+    it.score ? `<span title="AniList members’ weighted average">AniList <b>${it.score}%</b></span>` : '',
+    it.rating ? `<span title="TMDB user score${votes(it.votes)}">TMDB <b>${it.rating}</b></span>` : '',
+    sc.imdb != null
+      ? `<span title="IMDb rating${votes(sc.imdbVotes)}">IMDb <b>${sc.imdb}</b>${sc.imdbVotes ? ` <small>${shortCount(sc.imdbVotes)}</small>` : ''}</span>`
+      : missing('imdb', 'IMDb', f.minImdb),
+    sc.rt != null ? `<span title="Rotten Tomatoes critics">RT <b>${sc.rt}%</b></span>` : missing('rt', 'RT', f.minRt),
+    sc.metacritic != null ? `<span title="Metascore">MC <b>${sc.metacritic}</b></span>` : missing('metacritic', 'Metacritic', f.minMetacritic),
+  ]
+    .filter(Boolean)
+    .join('');
 }
 
 function keptUntil(it, ed) {
@@ -1688,7 +1701,6 @@ function itemHtml(it, idx, ed) {
       FORMAT_NAMES[it.format] || it.format,
       it.episodes ? `${it.episodes} ep` : null,
       it.format === 'MOVIE' && it.runtime ? mins(it.runtime) : null,
-      it.score ? `${it.score}%` : null,
       it.certification,
       it.studio,
     ];
@@ -1698,7 +1710,6 @@ function itemHtml(it, idx, ed) {
   } else {
     meta = [
       it.year,
-      it.rating ? `★ ${it.rating}` : null,
       it.seasons ? `${it.seasons} season${it.seasons > 1 ? 's' : ''}` : null,
       it.episodes ? `${it.episodes} eps` : null,
       it.format === 'MOVIE' && it.runtime ? mins(it.runtime) : null,
@@ -1712,6 +1723,7 @@ function itemHtml(it, idx, ed) {
       .filter(Boolean)
       .join(' · ');
   }
+  const scores = scoreText(it, ed.draft.filters);
   return `
     <div class="item${it.excluded ? ' excluded' : ''}">
       <div class="poster" style="background:${esc(it.color || 'var(--panel-2)')}">
@@ -1736,7 +1748,7 @@ function itemHtml(it, idx, ed) {
       <div class="item-body">
         <div class="item-title" title="${esc(it.subtitle || it.title)}">${esc(it.title)}</div>
         <div class="item-meta">${esc(meta.filter(Boolean).join(' · '))}</div>
-        ${it.scores ? `<div class="item-scores">${scoreText(it.scores)}</div>` : ''}
+        ${scores ? `<div class="item-scores">${scores}</div>` : ''}
         <div class="item-id">${ids}</div>
       </div>
     </div>`;
@@ -2069,12 +2081,24 @@ async function viewSettings() {
         </div>
 
         <div class="panel">
-          <div class="panel-head"><div><h2>Scores (OMDb)</h2><p>IMDb, Rotten Tomatoes and Metacritic scores for filters and title cards. Free key (1,000 lookups a day): omdbapi.com/apikey.aspx</p></div></div>
+          <div class="panel-head"><div><h2>Scores</h2><p>IMDb, Rotten Tomatoes and Metacritic scores for filters and title cards.</p></div></div>
           <div class="panel-body">
+            ${
+              st.imdb?.enabled
+                ? `<div class="row" style="flex:none">
+                    <span class="hint" style="flex:1">IMDb ratings: ${
+                      st.imdb.titles
+                        ? `${st.imdb.titles.toLocaleString()} titles from IMDb’s daily ratings file, updated ${esc(ago(st.imdb.updatedAt))}`
+                        : st.imdb.updating ? 'downloading IMDb’s daily ratings file…' : 'not downloaded yet'
+                    }${st.imdb.error ? ` — <span style="color:var(--err)">${esc(st.imdb.error)}</span>` : ''}. No key needed.</span>
+                    <button type="button" class="btn btn-sm" id="imdb-update" style="flex:none">${icon('refresh')}Update now</button>
+                  </div>`
+                : ''
+            }
             <div class="field">
-              <label for="omdb-key">OMDb API key</label>
+              <label for="omdb-key">OMDb API key <span class="label-note">— for Rotten Tomatoes & Metacritic</span></label>
               <input class="input mono" id="omdb-key" name="omdbApiKey" type="password" autocomplete="new-password" placeholder="${keyPlaceholder('omdb', 'e.g. a1b2c3d4')}" />
-              <span class="hint">Scores are cached for a week, so a handful of lists stays well inside the free limit.</span>
+              <span class="hint">Free key (1,000 lookups a day) from omdbapi.com/apikey.aspx. Scores are cached for a week, so a handful of lists stays well inside the free limit.</span>
             </div>
             ${testRow('omdb')}
           </div>
@@ -2358,6 +2382,20 @@ async function viewSettings() {
       toast('API key removed');
       viewSettings();
     }
+    if (b.id === 'imdb-update') {
+      b.disabled = true;
+      b.classList.add('loading');
+      try {
+        const m = await api('/api/imdb/update', { method: 'POST' });
+        if (m.error) throw new Error(m.error);
+        toast(`IMDb ratings updated — ${m.titles.toLocaleString()} titles`);
+        viewSettings();
+      } catch (err) {
+        toast(err.message, true);
+        b.disabled = false;
+        b.classList.remove('loading');
+      }
+    }
     if (b.id === 'map-update') {
       b.disabled = true;
       b.classList.add('loading');
@@ -2631,7 +2669,7 @@ async function viewSetup(stepId) {
   } else if (step === 'omdb') {
     body = `
       <h2>Critic & audience scores (OMDb)</h2>
-      <p class="muted">Optional. Lets lists filter on <b>IMDb rating, Rotten Tomatoes and Metacritic</b>, and shows those scores on every title.</p>
+      <p class="muted">Optional. IMDb ratings already work without a key (Courarr downloads IMDb’s daily ratings file). An OMDb key adds <b>Rotten Tomatoes and Metacritic</b> scores for filters and title cards.</p>
       <ol class="how">
         <li>Get a free key at <a href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noopener">omdbapi.com/apikey.aspx</a> (choose <b>FREE</b>, 1,000 lookups a day).</li>
         <li>Click the activation link OMDb emails you, then paste the key here.</li>

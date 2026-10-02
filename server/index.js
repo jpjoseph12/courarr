@@ -2,6 +2,7 @@ import { PORT, TZ, VERSION, log } from './config.js';
 import * as store from './db.js';
 import { app } from './app.js';
 import { ensureMapping } from './mapping.js';
+import { ensureImdb } from './imdb.js';
 import { schedule } from './scheduler.js';
 import { ensureKeys, isConfigured, resetAccount } from './auth.js';
 
@@ -18,6 +19,7 @@ schedule(store.getSettings().schedule);
 
 // Warm the mapping cache in the background so the first anime refresh is quick.
 ensureMapping().catch((e) => log(`Initial mapping load failed: ${e.message}`));
+ensureImdb();
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {

@@ -69,9 +69,11 @@ Every list kind has the same set of filters wherever the data supports it.
 | Popularity / score / rating / votes, rank by, keep top N | ✓ | ✓ | ✓ | ✓ |
 
 ¹ AniList has no age ratings, so anime lists borrow TMDB's through the ID mapping (needs a TMDB key).
-² Via [OMDb](https://www.omdbapi.com) (free key), cached for a week.
+² IMDb ratings come from [IMDb's own daily ratings file](https://developer.imdb.com/non-commercial-datasets/), so they're current and need no key. Rotten Tomatoes and Metacritic come from [OMDb](https://www.omdbapi.com) (free key), cached for a week.
 
-Titles with no rating, score, episode count or runtime yet are kept by default, so new releases aren't dropped.
+Titles with no rating, score, episode count or runtime yet are kept by default, so new releases aren't dropped. For scores this is the **Keep titles without that score yet** box under the score fields. A score Courarr *couldn't check* (for example OMDb's daily limit was reached) never counts as a pass.
+
+Title cards name every score's source: **AniList** (members' weighted average, %), **TMDB** (TMDB members' plain average, 0–10), **IMDb** (with its vote count), **RT** and **MC**. TMDB's and IMDb's scores are different audiences, so the same title often differs by a few tenths.
 
 ### Smart extras
 
@@ -107,8 +109,9 @@ Whatever you run it on, Courarr needs one port and one folder. Everything else i
 | `UMASK` | environment variable | e.g. `002` | Optional. Default `002`. |
 | `PORT` | environment variable | a port number | Rarely needed. Changes the port *inside* the container. Change the host side of the port mapping instead. |
 | `COURARR_RESET_AUTH` | environment variable | `true` once, then `false` | Only if you forget the password. It removes the login at start-up so you can create a new one; lists and settings are kept. |
+| `IMDB_RATINGS_URL` | environment variable | `off` | Rarely needed. Stops the daily IMDb ratings download (IMDb filters then use OMDb, which needs a key). |
 
-There's **nothing else to mount**. Courarr never touches your media files; Sonarr and Radarr do the downloading. It needs outbound internet access to reach AniList, TMDB, OMDb and GitHub, plus network access to Sonarr, Radarr and Maintainerr if you connect them.
+There's **nothing else to mount**. Courarr never touches your media files; Sonarr and Radarr do the downloading. It needs outbound internet access to reach AniList, TMDB, OMDb, IMDb's ratings file (datasets.imdbws.com, about 9 MB once a day, kept in `/config/cache`) and GitHub, plus network access to Sonarr, Radarr and Maintainerr if you connect them.
 
 Image: `ghcr.io/jpjoseph12/courarr:latest` (linux/amd64 and linux/arm64, so Raspberry Pi 4/5 and ARM NAS models work too). Every build is also tagged `sha-<commit>`, so you can pin an exact build; release tags such as `:0.1.0` appear once versions are tagged.
 
@@ -272,7 +275,7 @@ Open the web UI. The first visit walks you through it:
 1. **Create your login.**
 2. **Connect Sonarr & Radarr** (optional): URL and API key, tested as you go.
 3. **Add TMDB** for TV & movie lists (free key; the guide links to where to get it). Pick your region and the original languages you watch.
-4. **Add OMDb** for critic & audience scores (optional, free).
+4. **Add OMDb** for Rotten Tomatoes & Metacritic scores (optional, free). IMDb ratings work without it.
 5. **Set the feed address** Sonarr/Radarr will use, and optionally protect feeds with a key.
 6. **Start a first list** from a template.
 
@@ -282,7 +285,8 @@ Every step can be skipped and changed later in **Settings**. You can re-run the 
 |---|---|---|
 | Anime lists | *nothing* | AniList is free and needs no key |
 | TV & movie lists, age ratings on anime | **TMDB** API key *or* Read Access Token | themoviedb.org → *Settings → API* (free) |
-| Critic & audience score filters | **OMDb** API key | omdbapi.com/apikey.aspx (free, 1,000 lookups/day) |
+| IMDb rating filter | *nothing* | IMDb's daily ratings file is downloaded automatically |
+| Rotten Tomatoes & Metacritic filters | **OMDb** API key | omdbapi.com/apikey.aspx (free, 1,000 lookups/day) |
 | One-click **Add to Sonarr/Radarr**, "in library" badges, instant sync, better matching | **Sonarr** / **Radarr** URL + API key | Sonarr/Radarr → *Settings → General → API Key* |
 | Skip titles flagged by Maintainerr | **Maintainerr** URL (+ API key if yours uses one) | e.g. `http://<server-ip>:6246` → press **Test**, then tick the collections |
 | Notifications | Discord webhook, Telegram bot, ntfy topic, Gotify app token or any webhook URL | the service's own settings, then press **Send test** |
@@ -408,7 +412,7 @@ To try the UI without keys:
 
 Plain Node 24 (built-in `node:sqlite`), Express and a dependency-free front end. There's no build step. Every push to `main` runs the tests and publishes `ghcr.io/jpjoseph12/courarr` for amd64 and arm64.
 
-Anime data comes from [AniList](https://anilist.co), and anime ID mappings from [Fribb/anime-lists](https://github.com/Fribb/anime-lists). TV and movie data comes from [TMDB](https://www.themoviedb.org), and scores from [OMDb](https://www.omdbapi.com). This product uses the TMDB API but is not endorsed or certified by TMDB.
+Anime data comes from [AniList](https://anilist.co), and anime ID mappings from [Fribb/anime-lists](https://github.com/Fribb/anime-lists). TV and movie data comes from [TMDB](https://www.themoviedb.org), IMDb ratings from [IMDb's non-commercial datasets](https://developer.imdb.com/non-commercial-datasets/) (information courtesy of IMDb, used with permission for personal, non-commercial use), and Rotten Tomatoes / Metacritic scores from [OMDb](https://www.omdbapi.com). This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ## License
 

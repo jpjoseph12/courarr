@@ -8,6 +8,7 @@ import fs from 'node:fs';
 process.env.CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'courarr-features-'));
 process.env.OMDB_BASE_URL = 'http://127.0.0.1:7073';
 process.env.TMDB_BASE_URL = 'http://127.0.0.1:7074/3';
+process.env.IMDB_RATINGS_URL = 'off';
 
 const { applyDrip, feedFor, markIgnored } = await import('../server/builder.js');
 const { omdbClient, scoreCheck, scoresFor, summariseOmdb } = await import('../server/omdb.js');
@@ -31,6 +32,7 @@ before(async () => {
     omdbCalls++;
     const q = new URL(req.url, 'http://x').searchParams;
     res.setHeader('Content-Type', 'application/json');
+    if (q.get('apikey') === 'limit') return res.end(JSON.stringify({ Response: 'False', Error: 'Request limit reached!' }));
     if (q.get('apikey') !== 'k') return res.end(JSON.stringify({ Response: 'False', Error: 'Invalid API key!' }));
     res.end(JSON.stringify(OMDB[q.get('i')] || { Response: 'False', Error: 'Incorrect IMDb ID.' }));
   });
@@ -61,6 +63,19 @@ test('OMDb scores: parsing, caching, filter semantics', async () => {
   assert.ok(!scoreCheck({ minRt: 90, keepUnscored: false })(first.get('tt0000001')));
   assert.ok(scoreCheck({ minImdb: 8, minMetacritic: 70 })(first.get('tt1160419')));
   await assert.rejects(omdbClient('bad').get('tt0903747'), /Invalid API key/);
+});
+
+test('OMDb quota reached: unchecked titles never pass a score filter', async () => {
+  const warnings = new Set();
+  const s = await scoresFor(omdbClient('limit'), ['tt7000001', 'tt7000002', 'tt7000003', 'tt7000004', 'tt7000005', 'tt0903747'], (w) => warnings.add(w));
+  assert.deepEqual([...warnings], ['OMDb daily request limit reached']);
+  assert.deepEqual(s.get('tt7000005').unchecked, ['imdb', 'rt', 'metacritic'], 'later calls after the limit are unchecked too');
+  const rt = scoreCheck({ minRt: 50, keepUnscored: true });
+  assert.ok(!rt(s.get('tt7000001')), 'couldn’t check ≠ no score');
+  assert.ok(rt(s.get('tt0903747')), 'cached answers still count');
+  assert.ok(rt(null), 'no IMDb id at all: unscored, kept');
+  assert.ok(!scoreCheck({ minRt: 50, keepUnscored: false })(null));
+  assert.equal((await scoresFor(null, ['tt7000009'], () => {}, { omdb: false })).size, 0, 'IMDb-only without the ratings file: nothing to say');
 });
 
 test('drip-feed releases N new titles per refresh, best-ranked first', () => {
