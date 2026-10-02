@@ -237,14 +237,16 @@ export function allowedTvTypes(f) {
  * (or none) isn't rated yet. Not when ranking by rating or votes, where a few 10/10 votes
  * would put unknown titles on top.
  */
-const keepUnrated = (f) => f.minRating > 0 && f.keepUnscored !== false && !['rating', 'votes'].includes(f.sort);
+const keepUnrated = (f) => Number(f.minRating) > 0 && f.keepUnscored !== false && !['rating', 'votes'].includes(f.sort);
 
 /** The rating and vote minimums. With keepUnrated, titles below the vote minimum pass as not rated yet. */
 export function passesRating(r, f) {
-  const votes = r.vote_count || 0;
-  if (keepUnrated(f) && votes < Math.max(f.minVotes, 1)) return true;
-  if (f.minRating > 0 && (r.vote_average || 0) < f.minRating) return false;
-  return !(f.minVotes > 0 && votes < f.minVotes);
+  const votes = Number(r.vote_count) || 0;
+  const minRating = Number(f.minRating) || 0;
+  const minVotes = Number(f.minVotes) || 0; // lists saved by older versions may not have it
+  if (keepUnrated(f) && votes < Math.max(minVotes, 1)) return true;
+  if (minRating > 0 && (Number(r.vote_average) || 0) < minRating) return false;
+  return !(minVotes > 0 && votes < minVotes);
 }
 
 export function discoverParams(kind, f, region, at = new Date()) {

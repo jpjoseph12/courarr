@@ -469,6 +469,38 @@ describe('TV & movie lists', () => {
     }
   });
 
+  test('score fields of the other list type are ignored, never saved and never error', async () => {
+    const tvIds = async (filters) =>
+      (await ok('POST', '/api/preview', { source: 'tmdb', target: 'sonarr', filters: { minVotes: 0, ...filters } })).items.map((i) => i.key);
+    // A TV list has no AniList score: a stray minimum (even junk) changes nothing.
+    const plain = await tvIds({});
+    assert.deepEqual(await tvIds({ minScore: 95 }), plain);
+    assert.deepEqual(await tvIds({ minScore: 'abc', minPopularity: null }), plain);
+    // TV items carry no AniList score.
+    const tv = await ok('POST', '/api/preview', { source: 'tmdb', target: 'sonarr', filters: { minVotes: 0 } });
+    assert.ok(tv.items.every((i) => i.score === undefined && i.rating != null));
+
+    // An anime list has no TMDB rating or vote count.
+    const animeIds = async (filters) =>
+      (await ok('POST', '/api/preview', { source: 'anilist', target: 'sonarr', filters: { season: { mode: 'none' }, formats: ['TV'], countries: [], ...filters } })).items.map((i) => i.anilistId);
+    assert.deepEqual(await animeIds({ minRating: 9.9, minVotes: 100000 }), await animeIds({}));
+
+    // Saved lists keep only their own type's fields.
+    const tvList = await ok('POST', '/api/lists', { name: 'Stray score', source: 'tmdb', target: 'sonarr', filters: { minScore: 80, minRating: 7 } });
+    assert.equal(tvList.filters.minScore, undefined);
+    assert.equal(tvList.filters.minRating, 7);
+    const animeList = await ok('POST', '/api/lists', { name: 'Stray rating', source: 'anilist', target: 'sonarr', filters: { minRating: 7, minVotes: 50, minScore: 80 } });
+    assert.equal(animeList.filters.minRating, undefined);
+    assert.equal(animeList.filters.minVotes, undefined);
+    assert.equal(animeList.filters.minScore, 80);
+    for (const l of [tvList, animeList]) {
+      const run = await ok('POST', `/api/lists/${l.id}/refresh`);
+      assert.equal(run.status, 'ok', JSON.stringify(run.summary));
+      assert.equal(run.summary.lists[0].error, undefined, 'refreshes cleanly');
+      await ok('DELETE', `/api/lists/${l.id}`);
+    }
+  });
+
   test('new on my services: needs providers, tracks the catalogue, resets when its scope changes', async () => {
     const noProv = await api('POST', '/api/preview', { source: 'tmdb', target: 'sonarr', filters: { collection: 'arrivals', minVotes: 0 } });
     assert.equal(noProv.status, 500);
